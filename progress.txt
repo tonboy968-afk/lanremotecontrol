@@ -8,6 +8,14 @@
 - Host input injection via SendInput requires proper foreground focus handling; modifier key state synchronization is critical to prevent stuck keys due to UDP packet loss
 - Input events are serialized with type, high-resolution timestamp, and sequence numbers; host applies coalescing for rapid mouse movements and maintains key state maps to handle UDP unordered/duplicated packets
 
+## [2026-07-27 23:22:00] - US-005
+- What was implemented
+- Created docs/UI_UX_DESIGN.md with connection panel UI components (IP input, Connect button, status indicator)
+- Documented remote control window UI (frame display area, fullscreen toggle, disconnect button)
+- Defined interaction flow and state transitions for connection and remote control session
+- **Learnings for future iterations:**
+  - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
+  - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
 ## [2026-07-27 22:32:00] - US-001
 - What was implemented
@@ -16,6 +24,14 @@
 - **Learnings for future iterations:**
   - Patterns discovered: Project uses markdown documentation for architecture and design specs
   - Useful context: Host service code goes in src-host/, client application code goes in src-client/
+## [2026-07-27 23:22:00] - US-005
+- What was implemented
+- Created docs/UI_UX_DESIGN.md with connection panel UI components (IP input, Connect button, status indicator)
+- Documented remote control window UI (frame display area, fullscreen toggle, disconnect button)
+- Defined interaction flow and state transitions for connection and remote control session
+- **Learnings for future iterations:**
+  - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
+  - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
 ## [2026-07-27 22:50:00] - US-002
 - What was implemented
@@ -26,6 +42,14 @@
 - **Learnings for future iterations:**
   - Patterns discovered: Network protocol uses UDP with application-level ACK for critical messages
   - Useful context: Control commands require ACK confirmation, screen frames are generally lossy to maintain low latency
+## [2026-07-27 23:22:00] - US-005
+- What was implemented
+- Created docs/UI_UX_DESIGN.md with connection panel UI components (IP input, Connect button, status indicator)
+- Documented remote control window UI (frame display area, fullscreen toggle, disconnect button)
+- Defined interaction flow and state transitions for connection and remote control session
+- **Learnings for future iterations:**
+  - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
+  - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
 ## [2026-07-27 23:12:00] - US-003
 - What was implemented
@@ -36,6 +60,14 @@
   - Patterns discovered: Screen capture uses OS-specific native APIs (DXGI on Windows, ScreenCaptureKit on macOS) to minimize overhead
   - Gotchas encountered: Delta frame detection must include a threshold-based full frame fallback (>30% tiles changed) to avoid excessive small patch transmission overhead
   - Useful context: Adaptive switching between LZ4 raw delta and low-delay H.264/AV1 is based on network RTT, packet loss, CPU/GPU utilization, and content type detection
+## [2026-07-27 23:22:00] - US-005
+- What was implemented
+- Created docs/UI_UX_DESIGN.md with connection panel UI components (IP input, Connect button, status indicator)
+- Documented remote control window UI (frame display area, fullscreen toggle, disconnect button)
+- Defined interaction flow and state transitions for connection and remote control session
+- **Learnings for future iterations:**
+  - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
+  - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
 ## [2026-07-27 23:15:00] - US-004
 - What was implemented
@@ -47,4 +79,12 @@
   - Patterns discovered: Input capture uses OS-specific low-level APIs (WH_KEYBOARD_LL/WH_MOUSE_LL on Windows, CGEventTap on macOS, evdev/X11 on Linux)
   - Gotchas encountered: Host input injection via SendInput requires proper foreground focus handling; modifier key state synchronization is critical to prevent stuck keys due to UDP packet loss
   - Useful context: Input events are serialized with type, high-resolution timestamp, and sequence numbers; host applies coalescing for rapid mouse movements and maintains key state maps to handle UDP unordered/duplicated packets
+## [2026-07-27 23:22:00] - US-005
+- What was implemented
+- Created docs/UI_UX_DESIGN.md with connection panel UI components (IP input, Connect button, status indicator)
+- Documented remote control window UI (frame display area, fullscreen toggle, disconnect button)
+- Defined interaction flow and state transitions for connection and remote control session
+- **Learnings for future iterations:**
+  - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
+  - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
