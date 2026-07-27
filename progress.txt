@@ -1,3 +1,11 @@
-## Codebase Patterns
+﻿## Codebase Patterns
 (none yet — add reusable patterns here as you discover them)
+---
+## [2026-07-27 22:32:00] - US-001
+- What was implemented
+- Created project root directory structure (docs/, src-host/, src-client/)
+- Created docs/ARCHITECTURE.md with system components and data flow diagram
+- **Learnings for future iterations:**
+  - Patterns discovered: Project uses markdown documentation for architecture and design specs
+  - Useful context: Host service code goes in src-host/, client application code goes in src-client/
 ---
