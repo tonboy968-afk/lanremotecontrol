@@ -4,6 +4,9 @@
 - Screen capture uses OS-specific native APIs (DXGI on Windows, ScreenCaptureKit on macOS) to minimize overhead
 - Delta frame detection uses tile-based partitioning and hash-based change detection with a threshold-based full frame fallback (>30% tiles changed)
 - Adaptive switching between LZ4 raw delta and low-delay H.264/AV1 is based on network RTT, packet loss, CPU/GPU utilization, and content type detection
+- Input capture uses OS-specific low-level APIs (WH_KEYBOARD_LL/WH_MOUSE_LL on Windows, CGEventTap on macOS, evdev/X11 on Linux)
+- Host input injection via SendInput requires proper foreground focus handling; modifier key state synchronization is critical to prevent stuck keys due to UDP packet loss
+- Input events are serialized with type, high-resolution timestamp, and sequence numbers; host applies coalescing for rapid mouse movements and maintains key state maps to handle UDP unordered/duplicated packets
 
 ---
 ## [2026-07-27 22:32:00] - US-001
@@ -36,11 +39,12 @@
 ---
 ## [2026-07-27 23:15:00] - US-004
 - What was implemented
-- Created docs/INPUT_FORWARDING.md with client-side input event capture mechanisms (keyboard/mouse)
-- Specified OS-specific injection APIs (SendInput for Windows, CGEventPost for macOS, evdev/XTest for Linux)
-- Defined timestamping and ordering rules for input events using high-resolution timers and jitter compensation
+- Created docs/INPUT_FORWARDING.md with client-side input capture mechanisms and host-side low-level input injection design
+- Documented local input event capture on client (Windows WH_KEYBOARD_LL/WH_MOUSE_LL, macOS CGEventTap, Linux evdev/X11)
+- Specified OS-specific injection API (Windows SendInput, macOS CGPostKeyboardEvent/CGPostMouseEvent, Linux XTestFakeKeyEvent/evdev)
+- Defined timestamping and ordering rules for input events (high-resolution timestamps, monotonically increasing sequence numbers, UDP packet reordering and coalescing rules)
 - **Learnings for future iterations:**
-  - Patterns discovered: Input forwarding uses client-side coalescing and delta encoding for mouse movement to minimize network overhead
-  - Useful context: Host-side jitter buffer (2-5ms) is used to reorder events and smooth out network latency variations
+  - Patterns discovered: Input capture uses OS-specific low-level APIs (WH_KEYBOARD_LL/WH_MOUSE_LL on Windows, CGEventTap on macOS, evdev/X11 on Linux)
+  - Gotchas encountered: Host input injection via SendInput requires proper foreground focus handling; modifier key state synchronization is critical to prevent stuck keys due to UDP packet loss
+  - Useful context: Input events are serialized with type, high-resolution timestamp, and sequence numbers; host applies coalescing for rapid mouse movements and maintains key state maps to handle UDP unordered/duplicated packets
 ---
-"## [2026-07-27 23:15:00] - US-004 - What was implemented - Created docs/INPUT_FORWARDING.md with client-side input capture mechanisms and host-side low-level input injection design - Documented local input event capture on client (Windows WH_KEYBOARD_LL/WH_MOUSE_LL, macOS CGEventTap, Linux evdev/X11) - Specified OS-specific injection API (Windows SendInput, macOS CGPostKeyboardEvent/CGPostMouseEvent, Linux XTestFakeKeyEvent/evdev) - Defined timestamping and ordering rules for input events (high-resolution timestamps, monotonically increasing sequence numbers, UDP packet reordering and coalescing rules) - **Learnings for future iterations:**   - Patterns discovered: Input capture uses OS-specific low-level APIs (WH_KEYBOARD_LL/WH_MOUSE_LL on Windows, CGEventTap on macOS, evdev/X11 on Linux)   - Gotchas encountered: Host input injection via SendInput requires proper foreground focus handling; modifier key state synchronization is critical to prevent stuck keys due to UDP packet loss   - Useful context: Input events are serialized with type, high-resolution timestamp, and sequence numbers; host applies coalescing for rapid mouse movements and maintains key state maps to handle UDP unordered/duplicated packets ---" 
