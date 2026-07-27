@@ -1,0 +1,14 @@
+{
+  "git_installed": true,
+  "is_git_repo": false,
+  "default_branch": "",
+  "branch_name": "",
+  "repo_root": "",
+  "workspace_dir": "C:\\Users\\Administrator\\.qwenpaw\\workspaces\\cloud-orchestrator",
+  "max_iterations": 20,
+  "current_phase": "execution_confirmed",
+  "session_id": "1785162158742-e0r7yv2",
+  "verify_commands": "",
+  "verification_instructions": "",
+  "max_retries_per_story": 3
+}
