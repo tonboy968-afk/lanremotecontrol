@@ -1,5 +1,6 @@
 ﻿## Codebase Patterns
-(none yet — add reusable patterns here as you discover them)
+- Project uses markdown documentation for architecture and design specs in the docs/ directory
+- Host service code goes in src-host/, client application code goes in src-client/
 ---
 ## [2026-07-27 22:32:00] - US-001
 - What was implemented
@@ -8,4 +9,14 @@
 - **Learnings for future iterations:**
   - Patterns discovered: Project uses markdown documentation for architecture and design specs
   - Useful context: Host service code goes in src-host/, client application code goes in src-client/
+---
+## [2026-07-27 22:50:00] - US-002
+- What was implemented
+- Created docs/NETWORK_PROTOCOL.md with custom UDP-based network protocol design
+- Defined message types (control commands, screen frames, ACKs, heartbeats, connection management)
+- Specified sequence number and ACK mechanism for reliability
+- Documented TOS/QoS settings for low delay (DSCP markings, socket options)
+- **Learnings for future iterations:**
+  - Patterns discovered: Network protocol uses UDP with application-level ACK for critical messages
+  - Useful context: Control commands require ACK confirmation, screen frames are generally lossy to maintain low latency
 ---
