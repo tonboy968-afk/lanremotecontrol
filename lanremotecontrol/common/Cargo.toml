@@ -1,0 +1,9 @@
+[package]
+name = "lanremotecontrol-common"
+version.workspace = true
+edition.workspace = true
+description = "Shared message types, constants, and protocol helpers for LANRemoteControl"
+
+[dependencies]
+serde.workspace = true
+bincode.workspace = true

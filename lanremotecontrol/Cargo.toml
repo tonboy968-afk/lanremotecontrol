@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "common",
+    "host",
+    "client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["LANRemoteControl Team"]
+description = "Pure LAN PC remote control software with extremely low latency, lossless image quality, and minimalist UI"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+bincode = "1.3"

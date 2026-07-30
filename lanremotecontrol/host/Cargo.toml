@@ -1,0 +1,10 @@
+[package]
+name = "lanremotecontrol-host"
+version.workspace = true
+edition.workspace = true
+description = "Host service for LANRemoteControl - runs on the machine being controlled"
+
+[dependencies]
+lanremotecontrol-common = { path = "../common" }
+serde.workspace = true
+bincode.workspace = true
