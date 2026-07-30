@@ -148,8 +148,8 @@
         "cargo build passes"
       ],
       "priority": 3,
-      "passes": false,
-      "notes": "Depends on US-009 for network integration; Windows-only (DXGI)"
+      "passes": true,
+      "notes": "Completed: Implemented DxgiCapture via Windows DXGI Desktop Duplication (with cfg(windows) guard and non-Windows stub), tile-based delta detection (64x64, XXH32), LZ4 compression/decompression for delta regions and full frames, full-frame fallback at 30% threshold. All 50 tests pass across all crates."
     },
     {
       "id": "US-011",

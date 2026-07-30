@@ -50,13 +50,48 @@
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
 ---
 
-## [2026-07-30] - US-009
-- Implemented UDP network listener and connection establishment
-- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+## [2026-07-30] - US-010
+- What was implemented
+  - **Screen capture trait** in `common/src/capture.rs`: `ScreenCapture` trait, `CapturedFrame` struct, `CaptureError` enum
+  - **Tile-based delta detection and LZ4 compression** in `common/src/encoding.rs`:
+    - `tile_checksums()` — XXH32 hash per 64×64 tile
+    - `detect_delta_tiles()` — find changed tiles between frames
+    - `extract_tile_data()` — extract pixel data for a tile
+    - `compress_delta()` / `decompress_delta()` — round-trip for delta regions
+    - `compress_full_frame()` / `decompress_full_frame()` — full frame LZ4
+    - `should_send_full_frame()` — threshold-based (>30%) fallback
+    - `build_delta_regions()` — build delta regions from changed tiles
+    - Comprehensive tests for encoding/decoding round-trips (all pass)
+  - **Windows DXGI Desktop Duplication** in `host/src/capture.rs`:
+    - `DxgiCapture` struct implementing `ScreenCapture` trait
+    - D3D11 device creation (tries HW then WARP driver)
+    - AcquireNextFrame with staging texture copy
+    - Row-by-row pixel copy handling stride differences
+    - `#[cfg(windows)]` guard with non-Windows stub returning `UnsupportedOs`
+  - **Host main.rs demo**: initializes capture on startup, prints display info, tile counts, and LZ4 compression ratio
+  - **Workspace dependencies**: Added `lz4`, `xxhash-rust`, `windows-core`, and `windows` (with `Win32_Graphics_Dxgi`, `Win32_Graphics_Direct3D`, `Win32_Graphics_Direct3D11`, `Win32_Graphics_Dxgi_Common`, `Win32_System_Com`, `Win32_Graphics_Gdi`, `Win32_Foundation`)
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace deps)
+  - `lanremotecontrol/common/Cargo.toml`
+  - `lanremotecontrol/host/Cargo.toml`
+  - `lanremotecontrol/common/src/lib.rs` (added `pub mod capture;` and `pub mod encoding;`)
+  - `lanremotecontrol/common/src/capture.rs` (new)
+  - `lanremotecontrol/common/src/encoding.rs` (new)
+  - `lanremotecontrol/host/src/capture.rs` (new)
+  - `lanremotecontrol/host/src/main.rs` (added `mod capture;` and `demo_screen_capture()`)
+  - `lanremotecontrol/Cargo.lock` (auto)
 - **Learnings for future iterations:**
-  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
-  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
-  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
+  - Patterns discovered: The `windows` crate v0.58 uses a distinctive COM API style where methods like `EnumOutputs(u32) -> Result<IDXGIOutput>` return the interface directly, not via output parameters. Types like `D3D_DRIVER_TYPE` live in `Win32_Graphics_Direct3D` module, NOT `Direct3D11`. The `Interface` trait with `.cast()` is in `windows::core::Interface`.
+  - Gotchas encountered (Windows-specific DXGI issues!):
+    1. `D3D_DRIVER_TYPE_HARDWARE` and `D3D_DRIVER_TYPE_WARP` are in `windows::Win32::Graphics::Direct3D` (not `Direct3D11`)
+    2. `DuplicateOutput()` is on `IDXGIOutput1` (not `IDXGIOutput`) — need `.cast::<IDXGIOutput1>()` first
+    3. `HMODULE` wrapper is required for the software rasterizer parameter: `HMODULE(std::ptr::null_mut())` instead of `None`
+    4. `D3D11CreateDevice` signature: no separate `featurelevels: u32` param; `pfeaturelevels: None` handles both pointer and count
+    5. `ID3D11Texture2D::GetDesc(&self, pdesc: *mut D3D11_TEXTURE2D_DESC)` takes an output pointer (returns `()`), not self-returning
+    6. `D3D11_CPU_ACCESS_READ.0` is `i32` but `D3D11_TEXTURE2D_DESC.CPUAccessFlags` expects `u32` — need `.0 as u32` cast
+    7. `BindFlags`, `CPUAccessFlags`, `MiscFlags` are raw `u32` fields, not the flag-wrapping types in the struct literal
+  - Useful context: XXH32 is fast but for uniform frames edge tiles naturally have different hashes due to different data sizes; LZ4 may not compress high-entropy (pattern/random) data smaller than original — tests should verify round-trip correctness, not compression ratio
+  - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
 ---
 
 ## [2026-07-27 22:32:00] - US-001
@@ -96,13 +131,48 @@
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
 ---
 
-## [2026-07-30] - US-009
-- Implemented UDP network listener and connection establishment
-- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+## [2026-07-30] - US-010
+- What was implemented
+  - **Screen capture trait** in `common/src/capture.rs`: `ScreenCapture` trait, `CapturedFrame` struct, `CaptureError` enum
+  - **Tile-based delta detection and LZ4 compression** in `common/src/encoding.rs`:
+    - `tile_checksums()` — XXH32 hash per 64×64 tile
+    - `detect_delta_tiles()` — find changed tiles between frames
+    - `extract_tile_data()` — extract pixel data for a tile
+    - `compress_delta()` / `decompress_delta()` — round-trip for delta regions
+    - `compress_full_frame()` / `decompress_full_frame()` — full frame LZ4
+    - `should_send_full_frame()` — threshold-based (>30%) fallback
+    - `build_delta_regions()` — build delta regions from changed tiles
+    - Comprehensive tests for encoding/decoding round-trips (all pass)
+  - **Windows DXGI Desktop Duplication** in `host/src/capture.rs`:
+    - `DxgiCapture` struct implementing `ScreenCapture` trait
+    - D3D11 device creation (tries HW then WARP driver)
+    - AcquireNextFrame with staging texture copy
+    - Row-by-row pixel copy handling stride differences
+    - `#[cfg(windows)]` guard with non-Windows stub returning `UnsupportedOs`
+  - **Host main.rs demo**: initializes capture on startup, prints display info, tile counts, and LZ4 compression ratio
+  - **Workspace dependencies**: Added `lz4`, `xxhash-rust`, `windows-core`, and `windows` (with `Win32_Graphics_Dxgi`, `Win32_Graphics_Direct3D`, `Win32_Graphics_Direct3D11`, `Win32_Graphics_Dxgi_Common`, `Win32_System_Com`, `Win32_Graphics_Gdi`, `Win32_Foundation`)
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace deps)
+  - `lanremotecontrol/common/Cargo.toml`
+  - `lanremotecontrol/host/Cargo.toml`
+  - `lanremotecontrol/common/src/lib.rs` (added `pub mod capture;` and `pub mod encoding;`)
+  - `lanremotecontrol/common/src/capture.rs` (new)
+  - `lanremotecontrol/common/src/encoding.rs` (new)
+  - `lanremotecontrol/host/src/capture.rs` (new)
+  - `lanremotecontrol/host/src/main.rs` (added `mod capture;` and `demo_screen_capture()`)
+  - `lanremotecontrol/Cargo.lock` (auto)
 - **Learnings for future iterations:**
-  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
-  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
-  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
+  - Patterns discovered: The `windows` crate v0.58 uses a distinctive COM API style where methods like `EnumOutputs(u32) -> Result<IDXGIOutput>` return the interface directly, not via output parameters. Types like `D3D_DRIVER_TYPE` live in `Win32_Graphics_Direct3D` module, NOT `Direct3D11`. The `Interface` trait with `.cast()` is in `windows::core::Interface`.
+  - Gotchas encountered (Windows-specific DXGI issues!):
+    1. `D3D_DRIVER_TYPE_HARDWARE` and `D3D_DRIVER_TYPE_WARP` are in `windows::Win32::Graphics::Direct3D` (not `Direct3D11`)
+    2. `DuplicateOutput()` is on `IDXGIOutput1` (not `IDXGIOutput`) — need `.cast::<IDXGIOutput1>()` first
+    3. `HMODULE` wrapper is required for the software rasterizer parameter: `HMODULE(std::ptr::null_mut())` instead of `None`
+    4. `D3D11CreateDevice` signature: no separate `featurelevels: u32` param; `pfeaturelevels: None` handles both pointer and count
+    5. `ID3D11Texture2D::GetDesc(&self, pdesc: *mut D3D11_TEXTURE2D_DESC)` takes an output pointer (returns `()`), not self-returning
+    6. `D3D11_CPU_ACCESS_READ.0` is `i32` but `D3D11_TEXTURE2D_DESC.CPUAccessFlags` expects `u32` — need `.0 as u32` cast
+    7. `BindFlags`, `CPUAccessFlags`, `MiscFlags` are raw `u32` fields, not the flag-wrapping types in the struct literal
+  - Useful context: XXH32 is fast but for uniform frames edge tiles naturally have different hashes due to different data sizes; LZ4 may not compress high-entropy (pattern/random) data smaller than original — tests should verify round-trip correctness, not compression ratio
+  - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
 ---
 
 ## [2026-07-27 22:50:00] - US-002
@@ -144,13 +214,48 @@
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
 ---
 
-## [2026-07-30] - US-009
-- Implemented UDP network listener and connection establishment
-- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+## [2026-07-30] - US-010
+- What was implemented
+  - **Screen capture trait** in `common/src/capture.rs`: `ScreenCapture` trait, `CapturedFrame` struct, `CaptureError` enum
+  - **Tile-based delta detection and LZ4 compression** in `common/src/encoding.rs`:
+    - `tile_checksums()` — XXH32 hash per 64×64 tile
+    - `detect_delta_tiles()` — find changed tiles between frames
+    - `extract_tile_data()` — extract pixel data for a tile
+    - `compress_delta()` / `decompress_delta()` — round-trip for delta regions
+    - `compress_full_frame()` / `decompress_full_frame()` — full frame LZ4
+    - `should_send_full_frame()` — threshold-based (>30%) fallback
+    - `build_delta_regions()` — build delta regions from changed tiles
+    - Comprehensive tests for encoding/decoding round-trips (all pass)
+  - **Windows DXGI Desktop Duplication** in `host/src/capture.rs`:
+    - `DxgiCapture` struct implementing `ScreenCapture` trait
+    - D3D11 device creation (tries HW then WARP driver)
+    - AcquireNextFrame with staging texture copy
+    - Row-by-row pixel copy handling stride differences
+    - `#[cfg(windows)]` guard with non-Windows stub returning `UnsupportedOs`
+  - **Host main.rs demo**: initializes capture on startup, prints display info, tile counts, and LZ4 compression ratio
+  - **Workspace dependencies**: Added `lz4`, `xxhash-rust`, `windows-core`, and `windows` (with `Win32_Graphics_Dxgi`, `Win32_Graphics_Direct3D`, `Win32_Graphics_Direct3D11`, `Win32_Graphics_Dxgi_Common`, `Win32_System_Com`, `Win32_Graphics_Gdi`, `Win32_Foundation`)
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace deps)
+  - `lanremotecontrol/common/Cargo.toml`
+  - `lanremotecontrol/host/Cargo.toml`
+  - `lanremotecontrol/common/src/lib.rs` (added `pub mod capture;` and `pub mod encoding;`)
+  - `lanremotecontrol/common/src/capture.rs` (new)
+  - `lanremotecontrol/common/src/encoding.rs` (new)
+  - `lanremotecontrol/host/src/capture.rs` (new)
+  - `lanremotecontrol/host/src/main.rs` (added `mod capture;` and `demo_screen_capture()`)
+  - `lanremotecontrol/Cargo.lock` (auto)
 - **Learnings for future iterations:**
-  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
-  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
-  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
+  - Patterns discovered: The `windows` crate v0.58 uses a distinctive COM API style where methods like `EnumOutputs(u32) -> Result<IDXGIOutput>` return the interface directly, not via output parameters. Types like `D3D_DRIVER_TYPE` live in `Win32_Graphics_Direct3D` module, NOT `Direct3D11`. The `Interface` trait with `.cast()` is in `windows::core::Interface`.
+  - Gotchas encountered (Windows-specific DXGI issues!):
+    1. `D3D_DRIVER_TYPE_HARDWARE` and `D3D_DRIVER_TYPE_WARP` are in `windows::Win32::Graphics::Direct3D` (not `Direct3D11`)
+    2. `DuplicateOutput()` is on `IDXGIOutput1` (not `IDXGIOutput`) — need `.cast::<IDXGIOutput1>()` first
+    3. `HMODULE` wrapper is required for the software rasterizer parameter: `HMODULE(std::ptr::null_mut())` instead of `None`
+    4. `D3D11CreateDevice` signature: no separate `featurelevels: u32` param; `pfeaturelevels: None` handles both pointer and count
+    5. `ID3D11Texture2D::GetDesc(&self, pdesc: *mut D3D11_TEXTURE2D_DESC)` takes an output pointer (returns `()`), not self-returning
+    6. `D3D11_CPU_ACCESS_READ.0` is `i32` but `D3D11_TEXTURE2D_DESC.CPUAccessFlags` expects `u32` — need `.0 as u32` cast
+    7. `BindFlags`, `CPUAccessFlags`, `MiscFlags` are raw `u32` fields, not the flag-wrapping types in the struct literal
+  - Useful context: XXH32 is fast but for uniform frames edge tiles naturally have different hashes due to different data sizes; LZ4 may not compress high-entropy (pattern/random) data smaller than original — tests should verify round-trip correctness, not compression ratio
+  - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
 ---
 
 ## [2026-07-27 23:12:00] - US-003
@@ -192,13 +297,48 @@
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
 ---
 
-## [2026-07-30] - US-009
-- Implemented UDP network listener and connection establishment
-- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+## [2026-07-30] - US-010
+- What was implemented
+  - **Screen capture trait** in `common/src/capture.rs`: `ScreenCapture` trait, `CapturedFrame` struct, `CaptureError` enum
+  - **Tile-based delta detection and LZ4 compression** in `common/src/encoding.rs`:
+    - `tile_checksums()` — XXH32 hash per 64×64 tile
+    - `detect_delta_tiles()` — find changed tiles between frames
+    - `extract_tile_data()` — extract pixel data for a tile
+    - `compress_delta()` / `decompress_delta()` — round-trip for delta regions
+    - `compress_full_frame()` / `decompress_full_frame()` — full frame LZ4
+    - `should_send_full_frame()` — threshold-based (>30%) fallback
+    - `build_delta_regions()` — build delta regions from changed tiles
+    - Comprehensive tests for encoding/decoding round-trips (all pass)
+  - **Windows DXGI Desktop Duplication** in `host/src/capture.rs`:
+    - `DxgiCapture` struct implementing `ScreenCapture` trait
+    - D3D11 device creation (tries HW then WARP driver)
+    - AcquireNextFrame with staging texture copy
+    - Row-by-row pixel copy handling stride differences
+    - `#[cfg(windows)]` guard with non-Windows stub returning `UnsupportedOs`
+  - **Host main.rs demo**: initializes capture on startup, prints display info, tile counts, and LZ4 compression ratio
+  - **Workspace dependencies**: Added `lz4`, `xxhash-rust`, `windows-core`, and `windows` (with `Win32_Graphics_Dxgi`, `Win32_Graphics_Direct3D`, `Win32_Graphics_Direct3D11`, `Win32_Graphics_Dxgi_Common`, `Win32_System_Com`, `Win32_Graphics_Gdi`, `Win32_Foundation`)
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace deps)
+  - `lanremotecontrol/common/Cargo.toml`
+  - `lanremotecontrol/host/Cargo.toml`
+  - `lanremotecontrol/common/src/lib.rs` (added `pub mod capture;` and `pub mod encoding;`)
+  - `lanremotecontrol/common/src/capture.rs` (new)
+  - `lanremotecontrol/common/src/encoding.rs` (new)
+  - `lanremotecontrol/host/src/capture.rs` (new)
+  - `lanremotecontrol/host/src/main.rs` (added `mod capture;` and `demo_screen_capture()`)
+  - `lanremotecontrol/Cargo.lock` (auto)
 - **Learnings for future iterations:**
-  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
-  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
-  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
+  - Patterns discovered: The `windows` crate v0.58 uses a distinctive COM API style where methods like `EnumOutputs(u32) -> Result<IDXGIOutput>` return the interface directly, not via output parameters. Types like `D3D_DRIVER_TYPE` live in `Win32_Graphics_Direct3D` module, NOT `Direct3D11`. The `Interface` trait with `.cast()` is in `windows::core::Interface`.
+  - Gotchas encountered (Windows-specific DXGI issues!):
+    1. `D3D_DRIVER_TYPE_HARDWARE` and `D3D_DRIVER_TYPE_WARP` are in `windows::Win32::Graphics::Direct3D` (not `Direct3D11`)
+    2. `DuplicateOutput()` is on `IDXGIOutput1` (not `IDXGIOutput`) — need `.cast::<IDXGIOutput1>()` first
+    3. `HMODULE` wrapper is required for the software rasterizer parameter: `HMODULE(std::ptr::null_mut())` instead of `None`
+    4. `D3D11CreateDevice` signature: no separate `featurelevels: u32` param; `pfeaturelevels: None` handles both pointer and count
+    5. `ID3D11Texture2D::GetDesc(&self, pdesc: *mut D3D11_TEXTURE2D_DESC)` takes an output pointer (returns `()`), not self-returning
+    6. `D3D11_CPU_ACCESS_READ.0` is `i32` but `D3D11_TEXTURE2D_DESC.CPUAccessFlags` expects `u32` — need `.0 as u32` cast
+    7. `BindFlags`, `CPUAccessFlags`, `MiscFlags` are raw `u32` fields, not the flag-wrapping types in the struct literal
+  - Useful context: XXH32 is fast but for uniform frames edge tiles naturally have different hashes due to different data sizes; LZ4 may not compress high-entropy (pattern/random) data smaller than original — tests should verify round-trip correctness, not compression ratio
+  - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
 ---
 
 ## [2026-07-27 23:15:00] - US-004
@@ -241,12 +381,47 @@
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
 ---
 
-## [2026-07-30] - US-009
-- Implemented UDP network listener and connection establishment
-- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+## [2026-07-30] - US-010
+- What was implemented
+  - **Screen capture trait** in `common/src/capture.rs`: `ScreenCapture` trait, `CapturedFrame` struct, `CaptureError` enum
+  - **Tile-based delta detection and LZ4 compression** in `common/src/encoding.rs`:
+    - `tile_checksums()` — XXH32 hash per 64×64 tile
+    - `detect_delta_tiles()` — find changed tiles between frames
+    - `extract_tile_data()` — extract pixel data for a tile
+    - `compress_delta()` / `decompress_delta()` — round-trip for delta regions
+    - `compress_full_frame()` / `decompress_full_frame()` — full frame LZ4
+    - `should_send_full_frame()` — threshold-based (>30%) fallback
+    - `build_delta_regions()` — build delta regions from changed tiles
+    - Comprehensive tests for encoding/decoding round-trips (all pass)
+  - **Windows DXGI Desktop Duplication** in `host/src/capture.rs`:
+    - `DxgiCapture` struct implementing `ScreenCapture` trait
+    - D3D11 device creation (tries HW then WARP driver)
+    - AcquireNextFrame with staging texture copy
+    - Row-by-row pixel copy handling stride differences
+    - `#[cfg(windows)]` guard with non-Windows stub returning `UnsupportedOs`
+  - **Host main.rs demo**: initializes capture on startup, prints display info, tile counts, and LZ4 compression ratio
+  - **Workspace dependencies**: Added `lz4`, `xxhash-rust`, `windows-core`, and `windows` (with `Win32_Graphics_Dxgi`, `Win32_Graphics_Direct3D`, `Win32_Graphics_Direct3D11`, `Win32_Graphics_Dxgi_Common`, `Win32_System_Com`, `Win32_Graphics_Gdi`, `Win32_Foundation`)
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace deps)
+  - `lanremotecontrol/common/Cargo.toml`
+  - `lanremotecontrol/host/Cargo.toml`
+  - `lanremotecontrol/common/src/lib.rs` (added `pub mod capture;` and `pub mod encoding;`)
+  - `lanremotecontrol/common/src/capture.rs` (new)
+  - `lanremotecontrol/common/src/encoding.rs` (new)
+  - `lanremotecontrol/host/src/capture.rs` (new)
+  - `lanremotecontrol/host/src/main.rs` (added `mod capture;` and `demo_screen_capture()`)
+  - `lanremotecontrol/Cargo.lock` (auto)
 - **Learnings for future iterations:**
-  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
-  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
-  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
+  - Patterns discovered: The `windows` crate v0.58 uses a distinctive COM API style where methods like `EnumOutputs(u32) -> Result<IDXGIOutput>` return the interface directly, not via output parameters. Types like `D3D_DRIVER_TYPE` live in `Win32_Graphics_Direct3D` module, NOT `Direct3D11`. The `Interface` trait with `.cast()` is in `windows::core::Interface`.
+  - Gotchas encountered (Windows-specific DXGI issues!):
+    1. `D3D_DRIVER_TYPE_HARDWARE` and `D3D_DRIVER_TYPE_WARP` are in `windows::Win32::Graphics::Direct3D` (not `Direct3D11`)
+    2. `DuplicateOutput()` is on `IDXGIOutput1` (not `IDXGIOutput`) — need `.cast::<IDXGIOutput1>()` first
+    3. `HMODULE` wrapper is required for the software rasterizer parameter: `HMODULE(std::ptr::null_mut())` instead of `None`
+    4. `D3D11CreateDevice` signature: no separate `featurelevels: u32` param; `pfeaturelevels: None` handles both pointer and count
+    5. `ID3D11Texture2D::GetDesc(&self, pdesc: *mut D3D11_TEXTURE2D_DESC)` takes an output pointer (returns `()`), not self-returning
+    6. `D3D11_CPU_ACCESS_READ.0` is `i32` but `D3D11_TEXTURE2D_DESC.CPUAccessFlags` expects `u32` — need `.0 as u32` cast
+    7. `BindFlags`, `CPUAccessFlags`, `MiscFlags` are raw `u32` fields, not the flag-wrapping types in the struct literal
+  - Useful context: XXH32 is fast but for uniform frames edge tiles naturally have different hashes due to different data sizes; LZ4 may not compress high-entropy (pattern/random) data smaller than original — tests should verify round-trip correctness, not compression ratio
+  - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
 ---
 
