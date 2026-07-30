@@ -4,6 +4,7 @@
 //! manages the connection handshake, and maintains heartbeats.
 
 mod capture;
+mod input;
 mod net;
 
 use std::sync::atomic::{AtomicBool, Ordering};

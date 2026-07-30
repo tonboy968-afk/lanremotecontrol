@@ -84,6 +84,7 @@ dependencies = [
  "bincode",
  "lanremotecontrol-common",
  "serde",
+ "windows",
 ]
 
 [[package]]

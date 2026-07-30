@@ -4,6 +4,7 @@
 //! three-way handshake (request → capabilities → confirm) and reports the
 //! result.
 
+mod input;
 mod net;
 
 use std::env;
