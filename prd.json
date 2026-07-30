@@ -163,8 +163,8 @@
         "cargo build passes"
       ],
       "priority": 4,
-      "passes": false,
-      "notes": "Depends on US-009 for sending input events over network; Windows-specific"
+      "passes": true,
+      "notes": "Completed: Implemented client/src/input.rs (InputCapture with GetAsyncKeyState polling for all VK codes, GetCursorPos for mouse tracking, timestamp+sequence number serialization) and host/src/input.rs (InputInjector with SendInput for keyboard/mouse/scroll injection). Added Win32_UI_Input_KeyboardAndMouse and Win32_UI_WindowsAndMessaging workspace features. All 57 tests pass across all crates (2 client, 39 common, 16 host)."
     },
     {
       "id": "US-012",

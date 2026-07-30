@@ -94,6 +94,45 @@
   - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
 ---
 
+## [2026-07-30] - US-011
+- What was implemented
+  - **Client-side input capture** in `client/src/input.rs`:
+    - `InputCapture` struct with `GetAsyncKeyState` polling for all VK codes 0x01–0xFF
+    - Keyboard state tracking: previous vs current to detect press/release transitions
+    - Mouse position tracking via `GetCursorPos` with relative delta computation
+    - Mouse button state tracking (left, right, middle, X1, X2) via `GetAsyncKeyState`
+    - Modifier key state packing (Shift/Ctrl/Alt/Win) into u8 bitmask
+    - High-resolution timestamp (microseconds since UNIX epoch) per event
+    - Sequence number counter (`next_seq()`) for ordering
+    - `#[cfg(windows)]` guard with non-Windows stub returning empty vectors
+  - **Host-side input injection** in `host/src/input.rs`:
+    - `InputInjector` struct with `inject()` and `inject_batch()` methods
+    - Keyboard injection via `SendInput` with `KEYBDINPUT` (VIRTUAL_KEY, KEYBD_EVENT_FLAGS)
+    - Mouse movement injection: relative (MOUSEEVENTF_MOVE) and absolute (MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE)
+    - Mouse button injection: left/right/middle/X1/X2 down/up events
+    - Scroll injection: vertical (MOUSEEVENTF_WHEEL) and horizontal (MOUSEEVENTF_HWHEEL)
+    - 6 unit tests for payload-to-INPUT conversion logic
+    - `#[cfg(windows)]` guard with non-Windows stub returning Unsupported error
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (added `Win32_UI_Input_KeyboardAndMouse`, `Win32_UI_WindowsAndMessaging`)
+  - `lanremotecontrol/client/Cargo.toml` (added `windows` dependency)
+  - `lanremotecontrol/client/src/input.rs` (NEW — input capture module)
+  - `lanremotecontrol/client/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/host/src/input.rs` (NEW — input injection module)
+  - `lanremotecontrol/host/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-011 passes: true)
+- **Learnings for future iterations:**
+  - Patterns discovered: windows-rs v0.58 API — `GetAsyncKeyState(vkey: i32)` takes i32 not VIRTUAL_KEY; `GetCursorPos(lppoint: *mut POINT)` takes output pointer, returns Result<()>; `SendInput(pinputs: &[INPUT], cbsize: i32)` takes slice. `KEYBDINPUT.wVk` is VIRTUAL_KEY(u16), `dwFlags` is KEYBD_EVENT_FLAGS(u32). KEYEVENTF_KEYDOWN = 0 (no separate constant). `dwExtraInfo` is usize, not *mut c_void.
+  - Gotchas encountered:
+    1. `GetAsyncKeyState` takes `i32` directly (not `VIRTUAL_KEY`), even though `KEYBDINPUT.wVk` uses `VIRTUAL_KEY`
+    2. `0x8000` literal doesn't fit in `i16` — must cast to `u16` first: `(state as u16) & 0x8000 != 0`
+    3. `GetCursorPos` requires an output pointer `&mut POINT` and returns `Result<()>`, not directly the point
+    4. `dwExtraInfo` in both `KEYBDINPUT` and `MOUSEINPUT` is `usize`, not `*mut c_void` — use `0usize`
+    5. There is no `KEYEVENTF_KEYDOWN` constant in windows-rs 0.58 (value 0) — use `KEYBD_EVENT_FLAGS(0)`
+  - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
+---
+
 ## [2026-07-27 22:32:00] - US-001
 - What was implemented
 - Created project root directory structure (docs/, src-host/, src-client/)
@@ -173,6 +212,45 @@
     7. `BindFlags`, `CPUAccessFlags`, `MiscFlags` are raw `u32` fields, not the flag-wrapping types in the struct literal
   - Useful context: XXH32 is fast but for uniform frames edge tiles naturally have different hashes due to different data sizes; LZ4 may not compress high-entropy (pattern/random) data smaller than original — tests should verify round-trip correctness, not compression ratio
   - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
+---
+
+## [2026-07-30] - US-011
+- What was implemented
+  - **Client-side input capture** in `client/src/input.rs`:
+    - `InputCapture` struct with `GetAsyncKeyState` polling for all VK codes 0x01–0xFF
+    - Keyboard state tracking: previous vs current to detect press/release transitions
+    - Mouse position tracking via `GetCursorPos` with relative delta computation
+    - Mouse button state tracking (left, right, middle, X1, X2) via `GetAsyncKeyState`
+    - Modifier key state packing (Shift/Ctrl/Alt/Win) into u8 bitmask
+    - High-resolution timestamp (microseconds since UNIX epoch) per event
+    - Sequence number counter (`next_seq()`) for ordering
+    - `#[cfg(windows)]` guard with non-Windows stub returning empty vectors
+  - **Host-side input injection** in `host/src/input.rs`:
+    - `InputInjector` struct with `inject()` and `inject_batch()` methods
+    - Keyboard injection via `SendInput` with `KEYBDINPUT` (VIRTUAL_KEY, KEYBD_EVENT_FLAGS)
+    - Mouse movement injection: relative (MOUSEEVENTF_MOVE) and absolute (MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE)
+    - Mouse button injection: left/right/middle/X1/X2 down/up events
+    - Scroll injection: vertical (MOUSEEVENTF_WHEEL) and horizontal (MOUSEEVENTF_HWHEEL)
+    - 6 unit tests for payload-to-INPUT conversion logic
+    - `#[cfg(windows)]` guard with non-Windows stub returning Unsupported error
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (added `Win32_UI_Input_KeyboardAndMouse`, `Win32_UI_WindowsAndMessaging`)
+  - `lanremotecontrol/client/Cargo.toml` (added `windows` dependency)
+  - `lanremotecontrol/client/src/input.rs` (NEW — input capture module)
+  - `lanremotecontrol/client/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/host/src/input.rs` (NEW — input injection module)
+  - `lanremotecontrol/host/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-011 passes: true)
+- **Learnings for future iterations:**
+  - Patterns discovered: windows-rs v0.58 API — `GetAsyncKeyState(vkey: i32)` takes i32 not VIRTUAL_KEY; `GetCursorPos(lppoint: *mut POINT)` takes output pointer, returns Result<()>; `SendInput(pinputs: &[INPUT], cbsize: i32)` takes slice. `KEYBDINPUT.wVk` is VIRTUAL_KEY(u16), `dwFlags` is KEYBD_EVENT_FLAGS(u32). KEYEVENTF_KEYDOWN = 0 (no separate constant). `dwExtraInfo` is usize, not *mut c_void.
+  - Gotchas encountered:
+    1. `GetAsyncKeyState` takes `i32` directly (not `VIRTUAL_KEY`), even though `KEYBDINPUT.wVk` uses `VIRTUAL_KEY`
+    2. `0x8000` literal doesn't fit in `i16` — must cast to `u16` first: `(state as u16) & 0x8000 != 0`
+    3. `GetCursorPos` requires an output pointer `&mut POINT` and returns `Result<()>`, not directly the point
+    4. `dwExtraInfo` in both `KEYBDINPUT` and `MOUSEINPUT` is `usize`, not `*mut c_void` — use `0usize`
+    5. There is no `KEYEVENTF_KEYDOWN` constant in windows-rs 0.58 (value 0) — use `KEYBD_EVENT_FLAGS(0)`
+  - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
 ---
 
 ## [2026-07-27 22:50:00] - US-002
@@ -258,6 +336,45 @@
   - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
 ---
 
+## [2026-07-30] - US-011
+- What was implemented
+  - **Client-side input capture** in `client/src/input.rs`:
+    - `InputCapture` struct with `GetAsyncKeyState` polling for all VK codes 0x01–0xFF
+    - Keyboard state tracking: previous vs current to detect press/release transitions
+    - Mouse position tracking via `GetCursorPos` with relative delta computation
+    - Mouse button state tracking (left, right, middle, X1, X2) via `GetAsyncKeyState`
+    - Modifier key state packing (Shift/Ctrl/Alt/Win) into u8 bitmask
+    - High-resolution timestamp (microseconds since UNIX epoch) per event
+    - Sequence number counter (`next_seq()`) for ordering
+    - `#[cfg(windows)]` guard with non-Windows stub returning empty vectors
+  - **Host-side input injection** in `host/src/input.rs`:
+    - `InputInjector` struct with `inject()` and `inject_batch()` methods
+    - Keyboard injection via `SendInput` with `KEYBDINPUT` (VIRTUAL_KEY, KEYBD_EVENT_FLAGS)
+    - Mouse movement injection: relative (MOUSEEVENTF_MOVE) and absolute (MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE)
+    - Mouse button injection: left/right/middle/X1/X2 down/up events
+    - Scroll injection: vertical (MOUSEEVENTF_WHEEL) and horizontal (MOUSEEVENTF_HWHEEL)
+    - 6 unit tests for payload-to-INPUT conversion logic
+    - `#[cfg(windows)]` guard with non-Windows stub returning Unsupported error
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (added `Win32_UI_Input_KeyboardAndMouse`, `Win32_UI_WindowsAndMessaging`)
+  - `lanremotecontrol/client/Cargo.toml` (added `windows` dependency)
+  - `lanremotecontrol/client/src/input.rs` (NEW — input capture module)
+  - `lanremotecontrol/client/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/host/src/input.rs` (NEW — input injection module)
+  - `lanremotecontrol/host/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-011 passes: true)
+- **Learnings for future iterations:**
+  - Patterns discovered: windows-rs v0.58 API — `GetAsyncKeyState(vkey: i32)` takes i32 not VIRTUAL_KEY; `GetCursorPos(lppoint: *mut POINT)` takes output pointer, returns Result<()>; `SendInput(pinputs: &[INPUT], cbsize: i32)` takes slice. `KEYBDINPUT.wVk` is VIRTUAL_KEY(u16), `dwFlags` is KEYBD_EVENT_FLAGS(u32). KEYEVENTF_KEYDOWN = 0 (no separate constant). `dwExtraInfo` is usize, not *mut c_void.
+  - Gotchas encountered:
+    1. `GetAsyncKeyState` takes `i32` directly (not `VIRTUAL_KEY`), even though `KEYBDINPUT.wVk` uses `VIRTUAL_KEY`
+    2. `0x8000` literal doesn't fit in `i16` — must cast to `u16` first: `(state as u16) & 0x8000 != 0`
+    3. `GetCursorPos` requires an output pointer `&mut POINT` and returns `Result<()>`, not directly the point
+    4. `dwExtraInfo` in both `KEYBDINPUT` and `MOUSEINPUT` is `usize`, not `*mut c_void` — use `0usize`
+    5. There is no `KEYEVENTF_KEYDOWN` constant in windows-rs 0.58 (value 0) — use `KEYBD_EVENT_FLAGS(0)`
+  - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
+---
+
 ## [2026-07-27 23:12:00] - US-003
 - What was implemented
 - Created docs/SCREEN_CAPTURE_AND_ENCODING.md with OS-specific screen capture APIs (DXGI for Windows, ScreenCaptureKit for macOS, X11/Wayland for Linux)
@@ -339,6 +456,45 @@
     7. `BindFlags`, `CPUAccessFlags`, `MiscFlags` are raw `u32` fields, not the flag-wrapping types in the struct literal
   - Useful context: XXH32 is fast but for uniform frames edge tiles naturally have different hashes due to different data sizes; LZ4 may not compress high-entropy (pattern/random) data smaller than original — tests should verify round-trip correctness, not compression ratio
   - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
+---
+
+## [2026-07-30] - US-011
+- What was implemented
+  - **Client-side input capture** in `client/src/input.rs`:
+    - `InputCapture` struct with `GetAsyncKeyState` polling for all VK codes 0x01–0xFF
+    - Keyboard state tracking: previous vs current to detect press/release transitions
+    - Mouse position tracking via `GetCursorPos` with relative delta computation
+    - Mouse button state tracking (left, right, middle, X1, X2) via `GetAsyncKeyState`
+    - Modifier key state packing (Shift/Ctrl/Alt/Win) into u8 bitmask
+    - High-resolution timestamp (microseconds since UNIX epoch) per event
+    - Sequence number counter (`next_seq()`) for ordering
+    - `#[cfg(windows)]` guard with non-Windows stub returning empty vectors
+  - **Host-side input injection** in `host/src/input.rs`:
+    - `InputInjector` struct with `inject()` and `inject_batch()` methods
+    - Keyboard injection via `SendInput` with `KEYBDINPUT` (VIRTUAL_KEY, KEYBD_EVENT_FLAGS)
+    - Mouse movement injection: relative (MOUSEEVENTF_MOVE) and absolute (MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE)
+    - Mouse button injection: left/right/middle/X1/X2 down/up events
+    - Scroll injection: vertical (MOUSEEVENTF_WHEEL) and horizontal (MOUSEEVENTF_HWHEEL)
+    - 6 unit tests for payload-to-INPUT conversion logic
+    - `#[cfg(windows)]` guard with non-Windows stub returning Unsupported error
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (added `Win32_UI_Input_KeyboardAndMouse`, `Win32_UI_WindowsAndMessaging`)
+  - `lanremotecontrol/client/Cargo.toml` (added `windows` dependency)
+  - `lanremotecontrol/client/src/input.rs` (NEW — input capture module)
+  - `lanremotecontrol/client/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/host/src/input.rs` (NEW — input injection module)
+  - `lanremotecontrol/host/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-011 passes: true)
+- **Learnings for future iterations:**
+  - Patterns discovered: windows-rs v0.58 API — `GetAsyncKeyState(vkey: i32)` takes i32 not VIRTUAL_KEY; `GetCursorPos(lppoint: *mut POINT)` takes output pointer, returns Result<()>; `SendInput(pinputs: &[INPUT], cbsize: i32)` takes slice. `KEYBDINPUT.wVk` is VIRTUAL_KEY(u16), `dwFlags` is KEYBD_EVENT_FLAGS(u32). KEYEVENTF_KEYDOWN = 0 (no separate constant). `dwExtraInfo` is usize, not *mut c_void.
+  - Gotchas encountered:
+    1. `GetAsyncKeyState` takes `i32` directly (not `VIRTUAL_KEY`), even though `KEYBDINPUT.wVk` uses `VIRTUAL_KEY`
+    2. `0x8000` literal doesn't fit in `i16` — must cast to `u16` first: `(state as u16) & 0x8000 != 0`
+    3. `GetCursorPos` requires an output pointer `&mut POINT` and returns `Result<()>`, not directly the point
+    4. `dwExtraInfo` in both `KEYBDINPUT` and `MOUSEINPUT` is `usize`, not `*mut c_void` — use `0usize`
+    5. There is no `KEYEVENTF_KEYDOWN` constant in windows-rs 0.58 (value 0) — use `KEYBD_EVENT_FLAGS(0)`
+  - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
 ---
 
 ## [2026-07-27 23:15:00] - US-004
@@ -423,5 +579,44 @@
     7. `BindFlags`, `CPUAccessFlags`, `MiscFlags` are raw `u32` fields, not the flag-wrapping types in the struct literal
   - Useful context: XXH32 is fast but for uniform frames edge tiles naturally have different hashes due to different data sizes; LZ4 may not compress high-entropy (pattern/random) data smaller than original — tests should verify round-trip correctness, not compression ratio
   - Updating dependencies: `windows-core` must be added as an explicit workspace + host dependency when using `windows::core::Interface`
+---
+
+## [2026-07-30] - US-011
+- What was implemented
+  - **Client-side input capture** in `client/src/input.rs`:
+    - `InputCapture` struct with `GetAsyncKeyState` polling for all VK codes 0x01–0xFF
+    - Keyboard state tracking: previous vs current to detect press/release transitions
+    - Mouse position tracking via `GetCursorPos` with relative delta computation
+    - Mouse button state tracking (left, right, middle, X1, X2) via `GetAsyncKeyState`
+    - Modifier key state packing (Shift/Ctrl/Alt/Win) into u8 bitmask
+    - High-resolution timestamp (microseconds since UNIX epoch) per event
+    - Sequence number counter (`next_seq()`) for ordering
+    - `#[cfg(windows)]` guard with non-Windows stub returning empty vectors
+  - **Host-side input injection** in `host/src/input.rs`:
+    - `InputInjector` struct with `inject()` and `inject_batch()` methods
+    - Keyboard injection via `SendInput` with `KEYBDINPUT` (VIRTUAL_KEY, KEYBD_EVENT_FLAGS)
+    - Mouse movement injection: relative (MOUSEEVENTF_MOVE) and absolute (MOUSEEVENTF_MOVE|MOUSEEVENTF_ABSOLUTE)
+    - Mouse button injection: left/right/middle/X1/X2 down/up events
+    - Scroll injection: vertical (MOUSEEVENTF_WHEEL) and horizontal (MOUSEEVENTF_HWHEEL)
+    - 6 unit tests for payload-to-INPUT conversion logic
+    - `#[cfg(windows)]` guard with non-Windows stub returning Unsupported error
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (added `Win32_UI_Input_KeyboardAndMouse`, `Win32_UI_WindowsAndMessaging`)
+  - `lanremotecontrol/client/Cargo.toml` (added `windows` dependency)
+  - `lanremotecontrol/client/src/input.rs` (NEW — input capture module)
+  - `lanremotecontrol/client/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/host/src/input.rs` (NEW — input injection module)
+  - `lanremotecontrol/host/src/main.rs` (added `mod input;`)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-011 passes: true)
+- **Learnings for future iterations:**
+  - Patterns discovered: windows-rs v0.58 API — `GetAsyncKeyState(vkey: i32)` takes i32 not VIRTUAL_KEY; `GetCursorPos(lppoint: *mut POINT)` takes output pointer, returns Result<()>; `SendInput(pinputs: &[INPUT], cbsize: i32)` takes slice. `KEYBDINPUT.wVk` is VIRTUAL_KEY(u16), `dwFlags` is KEYBD_EVENT_FLAGS(u32). KEYEVENTF_KEYDOWN = 0 (no separate constant). `dwExtraInfo` is usize, not *mut c_void.
+  - Gotchas encountered:
+    1. `GetAsyncKeyState` takes `i32` directly (not `VIRTUAL_KEY`), even though `KEYBDINPUT.wVk` uses `VIRTUAL_KEY`
+    2. `0x8000` literal doesn't fit in `i16` — must cast to `u16` first: `(state as u16) & 0x8000 != 0`
+    3. `GetCursorPos` requires an output pointer `&mut POINT` and returns `Result<()>`, not directly the point
+    4. `dwExtraInfo` in both `KEYBDINPUT` and `MOUSEINPUT` is `usize`, not `*mut c_void` — use `0usize`
+    5. There is no `KEYEVENTF_KEYDOWN` constant in windows-rs 0.58 (value 0) — use `KEYBD_EVENT_FLAGS(0)`
+  - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
 ---
 
