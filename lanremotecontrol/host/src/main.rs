@@ -12,6 +12,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lanremotecontrol_common::*;
+use lanremotecontrol_common::capture::CaptureError;
+use lanremotecontrol_common::encoding;
 
 use net::{ConnectionManager, HeartbeatManager, UdpListener};
 
@@ -19,8 +21,21 @@ fn main() {
     println!("LANRemoteControl Host Service");
     println!("=============================");
 
-    // ── Screen capture module demonstration ──────────────────────────────
-    demo_screen_capture();
+    // ── Initialize persistent screen capture ───────────────────────────
+    let mut capture = match capture::DxgiCapture::new() {
+        Ok(cap) => {
+            println!("[✓] DXGI capture initialised");
+            println!("[i] {}", cap.display_info());
+            Some(cap)
+        }
+        Err(e) => {
+            eprintln!("[i] Screen capture unavailable: {}", e);
+            #[cfg(not(windows))]
+            eprintln!("[i] DXGI is a Windows-only API (current platform is not Windows)");
+            eprintln!("[i] Proceeding without screen capture — no video frames will be sent.");
+            None
+        }
+    };
 
     println!("\nPress Ctrl+C to stop.\n");
 
@@ -39,6 +54,7 @@ fn main() {
 
     let mut conn_mgr = ConnectionManager::new();
     let mut hb = HeartbeatManager::new(Duration::from_millis(HEARTBEAT_INTERVAL_MS));
+    let mut frame_seq: u32 = 0;
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -104,6 +120,24 @@ fn main() {
                             hb.received_ack(seq);
                         }
                     }
+                    MessageType::ControlCommand => {
+                        // Client sent a keyboard/mouse input command
+                        match bincode::deserialize::<ControlCommandPayload>(&msg.payload) {
+                            Ok(cmd) => {
+                                if let Err(e) = input::InputInjector::inject(&cmd) {
+                                    eprintln!("[!] Input injection failed from {}: {}", addr, e);
+                                }
+                                // Send ACK per protocol requirement
+                                let ack = create_ack(msg.sequence_number);
+                                if let Err(e) = listener.send_message(&ack, addr) {
+                                    eprintln!("[!] Failed to send ACK to {}: {}", addr, e);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[!] Invalid ControlCommand payload from {}: {}", addr, e);
+                            }
+                        }
+                    }
                     _ => {
                         println!("[i] Received {:?} from {}", msg.message_type, addr);
                     }
@@ -122,11 +156,14 @@ fn main() {
         // ── Heartbeat tick ───────────────────────────────────────────────
         if hb.tick() {
             let seq = hb.current_seq();
-            // Send heartbeat to all active connections
-            // (In a real implementation we would iterate active_connections and
-            //  send the heartbeat via `listener.send_message(&hb_msg, addr)`;
-            //  for now we just print a status line.)
             if conn_mgr.active_count() > 0 {
+                // 真正发送心跳消息到所有活跃连接
+                let hb_msg = create_heartbeat(seq);
+                for &addr in &conn_mgr.active_addrs() {
+                    if let Err(e) = listener.send_message(&hb_msg, addr) {
+                        eprintln!("[!] Failed to send heartbeat to {}: {}", addr, e);
+                    }
+                }
                 println!(
                     "[♥] Heartbeat seq={} (active connections: {})",
                     seq,
@@ -140,76 +177,66 @@ fn main() {
                 );
             }
         }
-    }
 
-    println!("\n[i] Host service shut down gracefully.");
-}
-
-// ── Screen capture demonstration ──────────────────────────────────────────
-
-/// Initialises the screen capture module (if available) and prints diagnostic
-/// information about the first captured frame.
-fn demo_screen_capture() {
-    use capture::DxgiCapture;
-    use lanremotecontrol_common::encoding;
-
-    println!("\n[📷] Screen Capture Module Demo");
-    println!("--------------------------------");
-
-    match DxgiCapture::new() {
-        Ok(mut cap) => {
-            println!("[✓] DXGI capture initialised");
-            println!("[i] {}", cap.display_info());
-
-            // Capture one frame
-            match cap.capture_frame() {
-                Ok(frame) => {
-                    print!("[i] Captured: {}x{} px", frame.width, frame.height);
-                    println!(
-                        " ({} MB raw)",
-                        frame.data.len() as f64 / 1_048_576.0
-                    );
-
-                    // Compute tile checksums
-                    let tile_size = encoding::DEFAULT_TILE_SIZE;
-                    let checksums =
-                        encoding::tile_checksums(&frame.data, frame.width, frame.height, tile_size);
-                    println!(
-                        "[i] Tiles: {} ({}x{})",
-                        checksums.len(),
-                        (frame.width + tile_size - 1) / tile_size,
-                        (frame.height + tile_size - 1) / tile_size,
-                    );
-
-                    // Compress a full frame for testing
-                    match encoding::compress_full_frame(&frame.data) {
-                        Ok(compressed) => {
-                            let ratio = compressed.len() as f64 / frame.data.len() as f64 * 100.0;
-                            println!(
-                                "[i] Full frame LZ4: {} bytes (ratio: {:.1}%)",
-                                compressed.len(),
-                                ratio
-                            );
+        // ── Screen capture and frame broadcast ───────────────────────────
+        if conn_mgr.active_count() > 0 {
+            if let Some(ref mut cap) = capture {
+                match cap.capture_frame() {
+                    Ok(frame) => {
+                        let raw_size = frame.data.len();
+                        match encoding::compress_full_frame(&frame.data) {
+                            Ok(compressed_data) => {
+                                frame_seq = frame_seq.wrapping_add(1);
+                                let msg_id = frame_seq;
+                                for &addr in &conn_mgr.active_addrs() {
+                                    if let Err(e) = listener.send_fragmented(
+                                        msg_id,
+                                        &compressed_data,
+                                        frame_seq,
+                                        addr,
+                                        frame.width,
+                                        frame.height,
+                                    ) {
+                                        eprintln!(
+                                            "[!] Failed to send frame to {}: {}",
+                                            addr, e
+                                        );
+                                    }
+                                }
+                                // Log first few frames + every 60 frames
+                                if frame_seq <= 5 || frame_seq % 60 == 0 {
+                                    let ratio = raw_size as f64 / compressed_data.len().max(1) as f64;
+                                    println!(
+                                        "[📷] Frame #{}: {}x{} px, {} bytes (LZ4, {:.1}:1) → {} client(s)",
+                                        frame_seq,
+                                        frame.width,
+                                        frame.height,
+                                        compressed_data.len(),
+                                        ratio,
+                                        conn_mgr.active_count(),
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[!] LZ4 compress failed: {}", e);
+                                // Fallback: skip frame rather than send nothing
+                            }
                         }
-                        Err(e) => eprintln!("[!] Full frame compression failed: {}", e),
                     }
-
-                    println!("[✓] Screen capture module verified OK");
-                }
-                Err(e) => {
-                    eprintln!("[!] capture_frame() failed: {}", e);
-                    eprintln!("[i] Screen capture will not be available in this session.");
+                    Err(CaptureError::FrameAcquireFailed(_)) => {
+                        // Timeout — no new frame, silently skip
+                    }
+                    Err(CaptureError::DeviceLost) => {
+                        eprintln!("[!] DXGI device lost, reinitializing...");
+                        capture = capture::DxgiCapture::new().ok();
+                    }
+                    Err(e) => {
+                        eprintln!("[!] Capture error: {:?}", e);
+                    }
                 }
             }
         }
-        Err(e) => {
-            eprintln!("[i] DXGI capture unavailable: {}", e);
-            #[cfg(not(windows))]
-            eprintln!("[i] DXGI is a Windows-only API (current platform is not Windows)");
-            #[cfg(windows)]
-            eprintln!("[i] On Windows, this may indicate no compatible GPU or DXGI support.");
-        }
     }
 
-    println!("--------------------------------\n");
+    println!("\n[i] Host service shut down gracefully.");
 }

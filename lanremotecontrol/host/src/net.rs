@@ -66,6 +66,54 @@ impl UdpListener {
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
         self.socket.local_addr()
     }
+
+    /// Send a large payload as fragmented `ScreenFrameChunk` messages.
+    ///
+    /// The payload is split into `SCREEN_FRAME_CHUNK_DATA_SIZE`-sized chunks,
+    /// each wrapped in a `ScreenFrameChunk` message and sent as separate
+    /// UDP datagrams.  Each chunk is sent **2 times** to guard against the
+    /// occasional packet loss typical on consumer LANs.
+    ///
+    /// The receiver's [`FrameAssemblyState::add_chunk`] ignores duplicates,
+    /// so re-transmission is idempotent — double-sending is a good trade-off
+    /// between reliability and bandwidth: at 0.01% random loss and ~4000
+    /// chunks, >99.99% of frames complete (vs ~67% with single send).
+    pub fn send_fragmented(
+        &self,
+        msg_id: u32,
+        payload: &[u8],
+        seq: u32,
+        dest: SocketAddr,
+        width: u32,
+        height: u32,
+    ) -> io::Result<()> {
+        let chunks = split_into_chunks(payload, msg_id, width, height);
+        // Pre-serialise all chunk messages once (avoids redundant work in
+        // each send pass).
+        let chunk_wires: Vec<Vec<u8>> = chunks
+            .iter()
+            .map(|chunk| {
+                let chunk_bytes = bincode::serialize(chunk)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                Message::new(MessageType::ScreenFrameChunk, seq, chunk_bytes)
+                    .to_bytes()
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+            })
+            .collect::<io::Result<Vec<Vec<u8>>>>()?;
+        // Two passes — each pre-serialised wire is sent 2×.  The receiver
+        // ignores duplicates, so this is completely idempotent.
+        for pass in 0..2 {
+            for wire in &chunk_wires {
+                self.socket.send_to(wire, dest)?;
+            }
+            if pass == 0 {
+                // Brief micro-yield between passes to let the kernel drain
+                // the send buffer, reducing burst drops on saturated links.
+                std::thread::yield_now();
+            }
+        }
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -132,6 +180,8 @@ impl ConnectionManager {
 
                 match payload {
                     ConnectionManagementPayload::Request(_req) => {
+                        // 清除该地址可能残留的旧连接（客户端重启后端口可能相同）
+                        self.handle_disconnect(addr);
                         // Client wants to connect → respond with capabilities
                         let seq = self.next_seq();
                         let encoding = EncodingCapabilities {
@@ -197,6 +247,11 @@ impl ConnectionManager {
     /// Return the number of active (fully established) connections.
     pub fn active_count(&self) -> usize {
         self.active_connections.len()
+    }
+
+    /// Iterate over all active connection addresses.
+    pub fn active_addrs(&self) -> Vec<SocketAddr> {
+        self.active_connections.iter().copied().collect()
     }
 
     fn next_seq(&mut self) -> u32 {

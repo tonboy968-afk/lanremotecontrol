@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 // Public sub-modules for screen capture abstractions and encoding.
 pub mod capture;
 pub mod encoding;
+pub mod hevc;
 
 // ============================================================================
 // Protocol Constants
@@ -28,6 +29,13 @@ pub const ACK_TIMEOUT_MS: u64 = 50;
 /// Maximum number of retransmissions for a message requiring ACK.
 pub const MAX_RETRANSMIT: u32 = 3;
 
+/// Maximum data bytes per screen frame chunk (fits safely in one UDP packet).
+///
+/// At 1400 MTU, the actual wire size of a chunk message is:
+///   Message header (~22 bytes) + ScreenFrameChunk header (~32 bytes) + data.
+/// 1320 + 54 ≈ 1374 bytes, well under the typical 1472 byte UDP payload limit.
+pub const SCREEN_FRAME_CHUNK_DATA_SIZE: usize = 1320;
+
 // ============================================================================
 // Message Type Enum
 // ============================================================================
@@ -46,6 +54,8 @@ pub enum MessageType {
     Heartbeat = 0x04,
     /// Connection management (initiation, capabilities exchange, teardown).
     ConnectionManagement = 0x05,
+    /// Chunk of a fragmented screen frame (large frames spanning multiple packets).
+    ScreenFrameChunk = 0x06,
 }
 
 impl MessageType {
@@ -57,6 +67,7 @@ impl MessageType {
             0x03 => Some(Self::Ack),
             0x04 => Some(Self::Heartbeat),
             0x05 => Some(Self::ConnectionManagement),
+            0x06 => Some(Self::ScreenFrameChunk),
             _ => None,
         }
     }
@@ -241,6 +252,138 @@ pub enum ConnectionManagementPayload {
 }
 
 // ============================================================================
+// Screen Frame Chunking (for large frames exceeding one UDP packet)
+// ============================================================================
+
+/// A single chunk of a fragmented screen frame.
+///
+/// Large compressed frames are split into chunks, each sent as a separate
+/// `Message` with type `ScreenFrameChunk`. The receiver reassembles chunks
+/// by `msg_id`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScreenFrameChunk {
+    /// Unique message ID shared by all chunks of the same frame.
+    pub msg_id: u32,
+    /// Total number of chunks for this frame.
+    pub chunk_count: u32,
+    /// Index of this chunk (0-based).
+    pub chunk_idx: u32,
+    /// Total length of the compressed frame data across all chunks.
+    pub total_data_len: u32,
+    /// Width of the original frame (set only in chunk 0, 0 for others).
+    pub width: u32,
+    /// Height of the original frame (set only in chunk 0, 0 for others).
+    pub height: u32,
+    /// This chunk's data (a slice of the compressed frame payload).
+    pub data: Vec<u8>,
+}
+
+/// Split a compressed frame payload into transmission chunks.
+pub fn split_into_chunks(
+    payload: &[u8],
+    msg_id: u32,
+    width: u32,
+    height: u32,
+) -> Vec<ScreenFrameChunk> {
+    let total_data_len = payload.len() as u32;
+    let chunk_size = SCREEN_FRAME_CHUNK_DATA_SIZE;
+    let chunk_count = ((payload.len() + chunk_size - 1) / chunk_size) as u32;
+    let mut chunks = Vec::with_capacity(chunk_count as usize);
+
+    for i in 0..chunk_count as usize {
+        let start = i * chunk_size;
+        let end = (start + chunk_size).min(payload.len());
+        let data = payload[start..end].to_vec();
+        chunks.push(ScreenFrameChunk {
+            msg_id,
+            chunk_count,
+            chunk_idx: i as u32,
+            total_data_len,
+            width: if i == 0 { width } else { 0 },
+            height: if i == 0 { height } else { 0 },
+            data,
+        });
+    }
+
+    chunks
+}
+
+/// In-progress state for reassembling a fragmented frame from chunks.
+#[derive(Debug)]
+pub struct FrameAssemblyState {
+    chunks: Vec<Option<Vec<u8>>>,
+    /// Total number of chunks expected for this frame.
+    pub chunk_count: u32,
+    total_data_len: u32,
+    width: u32,
+    height: u32,
+    /// Number of chunks received so far.
+    pub received_count: u32,
+}
+
+impl FrameAssemblyState {
+    /// Create a new assembly state expecting `chunk_count` chunks.
+    pub fn new(chunk_count: u32, total_data_len: u32, width: u32, height: u32) -> Self {
+        let mut chunks = Vec::with_capacity(chunk_count as usize);
+        for _ in 0..chunk_count {
+            chunks.push(None);
+        }
+        Self {
+            chunks,
+            chunk_count,
+            total_data_len,
+            width,
+            height,
+            received_count: 0,
+        }
+    }
+
+    /// Add a received chunk. Returns the complete frame data when all chunks arrive.
+    pub fn add_chunk(&mut self, idx: usize, data: Vec<u8>) -> Option<(Vec<u8>, u32, u32)> {
+        if idx >= self.chunks.len() || self.chunks[idx].is_some() {
+            return None; // duplicate or out-of-range
+        }
+        self.chunks[idx] = Some(data);
+        self.received_count += 1;
+        if self.received_count == self.chunk_count {
+            let mut full = Vec::with_capacity(self.total_data_len as usize);
+            for chunk in &self.chunks {
+                if let Some(ref data) = chunk {
+                    full.extend_from_slice(data);
+                }
+            }
+            Some((full, self.width, self.height))
+        } else {
+            None
+        }
+    }
+}
+
+/// Feed a received chunk into the assembly map.
+///
+/// Returns `Some((complete_data, width, height))` when the last chunk arrives,
+/// at which point the assembly state is removed from the map.
+pub fn feed_frame_chunk(
+    assemblies: &mut std::collections::HashMap<u32, FrameAssemblyState>,
+    chunk: ScreenFrameChunk,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let entry = assemblies.entry(chunk.msg_id).or_insert_with(|| {
+        FrameAssemblyState::new(
+            chunk.chunk_count,
+            chunk.total_data_len,
+            chunk.width,
+            chunk.height,
+        )
+    });
+
+    let result = entry.add_chunk(chunk.chunk_idx as usize, chunk.data);
+    if result.is_some() {
+        assemblies.remove(&chunk.msg_id);
+    }
+    result
+}
+
+// ============================================================================
 // Session State
 // ============================================================================
 
@@ -374,6 +517,7 @@ mod tests {
         assert_eq!(MessageType::from_u8(0x03), Some(MessageType::Ack));
         assert_eq!(MessageType::from_u8(0x04), Some(MessageType::Heartbeat));
         assert_eq!(MessageType::from_u8(0x05), Some(MessageType::ConnectionManagement));
+        assert_eq!(MessageType::from_u8(0x06), Some(MessageType::ScreenFrameChunk));
         assert_eq!(MessageType::from_u8(0xFF), None);
     }
 

@@ -2,19 +2,26 @@
 //!
 //! Provides a UDP client and a handshake helper for connecting to the host.
 
+use std::collections::HashMap;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use lanremotecontrol_common::*;
+use lanremotecontrol_common::encoding;
 
 // ============================================================================
 // UdpClient
 // ============================================================================
 
 /// A connected UDP socket used to communicate with the host.
+///
+/// Internally wraps the socket in `Arc` so that multiple threads can share
+/// the same client (e.g. one for sending, another for receiving).
 pub struct UdpClient {
-    socket: UdpSocket,
+    socket: Arc<UdpSocket>,
 }
 
 impl UdpClient {
@@ -34,7 +41,7 @@ impl UdpClient {
         let socket = UdpSocket::bind(local_addr)?;
         socket.connect(addr)?;
 
-        Ok(Self { socket })
+        Ok(Self { socket: Arc::new(socket) })
     }
 
     /// Serialise and send a message to the connected host.
@@ -251,4 +258,138 @@ mod tests {
         let rcvd = client.receive(200).expect("client receive");
         assert_eq!(rcvd, h2c);
     }
+}
+
+// ============================================================================
+// Frame Receiver (background thread)
+// ============================================================================
+
+/// Shared frame buffer type: `(raw_BGRA_data, width, height)`.
+pub type FrameBuffer = Arc<Mutex<Option<(Vec<u8>, u32, u32)>>>;
+
+/// Debug log writer (append-only text file in the working directory).
+/// Helps diagnose frame pipeline issues when the GUI window has no console.
+fn debug_log(msg: impl AsRef<str>) {
+    use std::io::Write;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("lrc_client_debug.log")
+    {
+        let _ = writeln!(f, "[{}] {}", now_ms, msg.as_ref());
+    }
+    eprintln!("[LRC] {}", msg.as_ref());
+}
+
+/// Background loop that receives fragmented screen frames, reassembles them
+/// and stores the decompressed BGRA frame in `frame_buffer`.
+///
+/// Runs until the socket read returns a permanent error.
+pub fn run_frame_receiver(client: Arc<UdpClient>, frame_buffer: FrameBuffer) {
+    let mut assemblies: HashMap<u32, FrameAssemblyState> = HashMap::new();
+    let mut stale_cleanup = Instant::now();
+
+    loop {
+        match client.receive(100) {
+            Ok(msg) => {
+                match msg.message_type {
+                    MessageType::ScreenFrameChunk => {
+                        if let Ok(chunk) = bincode::deserialize::<ScreenFrameChunk>(&msg.payload) {
+                            // Log first chunk of each frame to track progress
+                            if chunk.chunk_idx == 0 {
+                                debug_log(format!(
+                                    "Frame chunk start: msg_id={}, chunks={}, size={}",
+                                    chunk.msg_id, chunk.chunk_count, chunk.total_data_len,
+                                ));
+                            }
+                            if let Some((full_data, w, h)) =
+                                feed_frame_chunk(&mut assemblies, chunk)
+                            {
+                                debug_log(format!(
+                                    "Frame assembled: {}x{} ({} bytes), decoding…",
+                                    w, h, full_data.len()
+                                ));
+                                // All chunks received — LZ4 decompress the frame
+                                let expected_size = (w * h * 4) as usize;
+                                match encoding::decompress_full_frame(&full_data, expected_size) {
+                                    Ok(bgra) => {
+                                        debug_log(format!(
+                                            "LZ4 decompress OK: {}×{} -> {} bytes",
+                                            w, h, bgra.len()
+                                        ));
+                                        if let Ok(mut guard) = frame_buffer.lock() {
+                                            *guard = Some((bgra, w, h));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        debug_log(format!(
+                                            "LZ4 decompress FAILED: {} (data={} bytes, {}x{})",
+                                            e, full_data.len(), w, h
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    MessageType::Heartbeat => {
+                        // 收到主机心跳 → 回复 ACK
+                        let ack = create_ack(msg.sequence_number);
+                        let _ = client.send(&ack);
+                    }
+                    _ => {
+                        // 其他消息类型暂时忽略
+                    }
+                }
+            }
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                // Normal timeout — continue
+            }
+            Err(e) => {
+                eprintln!("[!] Frame receiver error: {}, exiting", e);
+                break;
+            }
+        }
+
+        // Periodically clean stale partial assemblies (older than 5 seconds)
+        if stale_cleanup.elapsed() > Duration::from_secs(5) {
+            assemblies.retain(|_, state| {
+                // Keep only entries where we have received at least 1 chunk
+                // In a full implementation we'd track a timestamp per state.
+                // For P0 just keep everything that has progress.
+                state.received_count > 0 && state.received_count < state.chunk_count
+            });
+            stale_cleanup = Instant::now();
+        }
+    }
+}
+
+/// 将像素坐标归一化为 Windows 绝对坐标 (0..65535)
+///
+/// Windows `MOUSEEVENTF_ABSOLUTE` 要求 `dx`/`dy` 的范围为 0..65535。
+/// 此函数将屏幕像素坐标映射到该范围。
+pub fn normalize_abs_coord(pixel: f32, screen_size: u32) -> i32 {
+    if screen_size == 0 {
+        return 0;
+    }
+    let normalized = (pixel / screen_size as f32) * 65535.0;
+    (normalized.round() as i32).clamp(0, 65535)
+}
+
+/// Convenience function: convert BGRA pixel data to RGBA for egui.
+pub fn bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(bgra.len());
+    for chunk in bgra.chunks_exact(4) {
+        rgba.push(chunk[2]); // R
+        rgba.push(chunk[1]); // G
+        rgba.push(chunk[0]); // B
+        rgba.push(chunk[3]); // A (unchanged)
+    }
+    rgba
 }
