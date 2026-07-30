@@ -11,6 +11,15 @@
 - **Message serialization:** Uses serde + bincode for compact binary serialization; message header is 11 bytes (MessageType + sequence_number + payload_length + reserved)
 - **Workspace dependency management:** Common dependencies (serde, bincode) defined at workspace level and inherited by member crates
 
+## [2026-07-30] - US-009
+- Implemented UDP network listener and connection establishment
+- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+- **Learnings for future iterations:**
+  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
+  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
+  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
+---
+
 ## [2026-07-27 23:22:00] - US-005
 - What was implemented
 - Created docs/UI_UX_DESIGN.md with connection panel UI components (IP input, Connect button, status indicator)
@@ -39,6 +48,15 @@
   - Patterns discovered: Workspace resolver = "2" is needed for clean dependency resolution; use workspace-level [workspace.dependencies] to share dependency versions across packages
   - Gotchas encountered: bincode 1.x must be explicitly specified (3.x is latest but breaking); Message header size is 11 bytes (1+4+4+2) per protocol spec — important for MTU calculations
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
+---
+
+## [2026-07-30] - US-009
+- Implemented UDP network listener and connection establishment
+- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+- **Learnings for future iterations:**
+  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
+  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
+  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
 ---
 
 ## [2026-07-27 22:32:00] - US-001
@@ -76,6 +94,15 @@
   - Patterns discovered: Workspace resolver = "2" is needed for clean dependency resolution; use workspace-level [workspace.dependencies] to share dependency versions across packages
   - Gotchas encountered: bincode 1.x must be explicitly specified (3.x is latest but breaking); Message header size is 11 bytes (1+4+4+2) per protocol spec — important for MTU calculations
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
+---
+
+## [2026-07-30] - US-009
+- Implemented UDP network listener and connection establishment
+- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+- **Learnings for future iterations:**
+  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
+  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
+  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
 ---
 
 ## [2026-07-27 22:50:00] - US-002
@@ -117,6 +144,15 @@
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
 ---
 
+## [2026-07-30] - US-009
+- Implemented UDP network listener and connection establishment
+- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+- **Learnings for future iterations:**
+  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
+  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
+  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
+---
+
 ## [2026-07-27 23:12:00] - US-003
 - What was implemented
 - Created docs/SCREEN_CAPTURE_AND_ENCODING.md with OS-specific screen capture APIs (DXGI for Windows, ScreenCaptureKit for macOS, X11/Wayland for Linux)
@@ -154,6 +190,15 @@
   - Patterns discovered: Workspace resolver = "2" is needed for clean dependency resolution; use workspace-level [workspace.dependencies] to share dependency versions across packages
   - Gotchas encountered: bincode 1.x must be explicitly specified (3.x is latest but breaking); Message header size is 11 bytes (1+4+4+2) per protocol spec — important for MTU calculations
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
+---
+
+## [2026-07-30] - US-009
+- Implemented UDP network listener and connection establishment
+- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+- **Learnings for future iterations:**
+  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
+  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
+  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
 ---
 
 ## [2026-07-27 23:15:00] - US-004
@@ -194,5 +239,14 @@
   - Patterns discovered: Workspace resolver = "2" is needed for clean dependency resolution; use workspace-level [workspace.dependencies] to share dependency versions across packages
   - Gotchas encountered: bincode 1.x must be explicitly specified (3.x is latest but breaking); Message header size is 11 bytes (1+4+4+2) per protocol spec — important for MTU calculations
   - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
+---
+
+## [2026-07-30] - US-009
+- Implemented UDP network listener and connection establishment
+- Files changed: host/src/net.rs, client/src/net.rs, host/src/main.rs, client/src/main.rs, host/Cargo.toml
+- **Learnings for future iterations:**
+  - Patterns discovered: Use `#[cfg(unix)]` for platform-specific socket options (SO_REUSEADDR, TOS); `force_tick` helper pattern for testing time-based heartbeat manager without wall-clock dependency
+  - Gotchas encountered: `UdpSocket::set_reuseaddr()` and `set_tos()` are Unix-only — on Windows they don't exist and require `#[cfg(unix)]` guards; sending to `0.0.0.0:port` is not routable on Windows (must use `127.0.0.1` in tests); instant-based tick tests are fragile under parallel test execution due to timer resolution — reset `last_tick` before each call to guarantee tick fires
+  - Useful context: `UdpSocket::connect()` on client side allows using `send()`/`recv()` without addresses; `wrapping_sub` handles heartbeat sequence number wraparound; bincode serialization errors convert to `io::Error` via `map_err`
 ---
 
