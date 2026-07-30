@@ -7,6 +7,9 @@
 - Input capture uses OS-specific low-level APIs (WH_KEYBOARD_LL/WH_MOUSE_LL on Windows, CGEventTap on macOS, evdev/X11 on Linux)
 - Host input injection via SendInput requires proper foreground focus handling; modifier key state synchronization is critical to prevent stuck keys due to UDP packet loss
 - Input events are serialized with type, high-resolution timestamp, and sequence numbers; host applies coalescing for rapid mouse movements and maintains key state maps to handle UDP unordered/duplicated packets
+- **Rust project structure:** Cargo workspace with three crates: `common` (shared message types, serialization, protocol constants), `host` (host service binary), `client` (client application binary)
+- **Message serialization:** Uses serde + bincode for compact binary serialization; message header is 11 bytes (MessageType + sequence_number + payload_length + reserved)
+- **Workspace dependency management:** Common dependencies (serde, bincode) defined at workspace level and inherited by member crates
 
 ## [2026-07-27 23:22:00] - US-005
 - What was implemented
@@ -17,6 +20,27 @@
   - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
   - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
+## [2026-07-30 16:15:00] - US-008
+- What was implemented
+  - Created Rust Cargo workspace under `lanremotecontrol/` with workspace root Cargo.toml
+  - Implemented `common/` library crate with core message types (MessageType, Message, control command sub-types, connection management sub-types)
+  - Implemented protocol constants (DEFAULT_PORT, HEARTBEAT_INTERVAL_MS, MAX_PACKET_SIZE, ACK_TIMEOUT_MS, MAX_RETRANSMIT)
+  - Implemented session state types (ConnectionState enum, SessionConfig struct)
+  - Implemented serialization using serde + bincode with round-trip tests
+  - Created host binary crate (`host/`) and client binary crate (`client/`)
+  - Added .gitignore for Rust build artifacts
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace root)
+  - `lanremotecontrol/common/Cargo.toml`, `lanremotecontrol/common/src/lib.rs`
+  - `lanremotecontrol/host/Cargo.toml`, `lanremotecontrol/host/src/main.rs`
+  - `lanremotecontrol/client/Cargo.toml`, `lanremotecontrol/client/src/main.rs`
+  - `lanremotecontrol/.gitignore`
+- **Learnings for future iterations:**
+  - Patterns discovered: Workspace resolver = "2" is needed for clean dependency resolution; use workspace-level [workspace.dependencies] to share dependency versions across packages
+  - Gotchas encountered: bincode 1.x must be explicitly specified (3.x is latest but breaking); Message header size is 11 bytes (1+4+4+2) per protocol spec — important for MTU calculations
+  - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
+---
+
 ## [2026-07-27 22:32:00] - US-001
 - What was implemented
 - Created project root directory structure (docs/, src-host/, src-client/)
@@ -33,6 +57,27 @@
   - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
   - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
+## [2026-07-30 16:15:00] - US-008
+- What was implemented
+  - Created Rust Cargo workspace under `lanremotecontrol/` with workspace root Cargo.toml
+  - Implemented `common/` library crate with core message types (MessageType, Message, control command sub-types, connection management sub-types)
+  - Implemented protocol constants (DEFAULT_PORT, HEARTBEAT_INTERVAL_MS, MAX_PACKET_SIZE, ACK_TIMEOUT_MS, MAX_RETRANSMIT)
+  - Implemented session state types (ConnectionState enum, SessionConfig struct)
+  - Implemented serialization using serde + bincode with round-trip tests
+  - Created host binary crate (`host/`) and client binary crate (`client/`)
+  - Added .gitignore for Rust build artifacts
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace root)
+  - `lanremotecontrol/common/Cargo.toml`, `lanremotecontrol/common/src/lib.rs`
+  - `lanremotecontrol/host/Cargo.toml`, `lanremotecontrol/host/src/main.rs`
+  - `lanremotecontrol/client/Cargo.toml`, `lanremotecontrol/client/src/main.rs`
+  - `lanremotecontrol/.gitignore`
+- **Learnings for future iterations:**
+  - Patterns discovered: Workspace resolver = "2" is needed for clean dependency resolution; use workspace-level [workspace.dependencies] to share dependency versions across packages
+  - Gotchas encountered: bincode 1.x must be explicitly specified (3.x is latest but breaking); Message header size is 11 bytes (1+4+4+2) per protocol spec — important for MTU calculations
+  - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
+---
+
 ## [2026-07-27 22:50:00] - US-002
 - What was implemented
 - Created docs/NETWORK_PROTOCOL.md with custom UDP-based network protocol design
@@ -51,6 +96,27 @@
   - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
   - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
+## [2026-07-30 16:15:00] - US-008
+- What was implemented
+  - Created Rust Cargo workspace under `lanremotecontrol/` with workspace root Cargo.toml
+  - Implemented `common/` library crate with core message types (MessageType, Message, control command sub-types, connection management sub-types)
+  - Implemented protocol constants (DEFAULT_PORT, HEARTBEAT_INTERVAL_MS, MAX_PACKET_SIZE, ACK_TIMEOUT_MS, MAX_RETRANSMIT)
+  - Implemented session state types (ConnectionState enum, SessionConfig struct)
+  - Implemented serialization using serde + bincode with round-trip tests
+  - Created host binary crate (`host/`) and client binary crate (`client/`)
+  - Added .gitignore for Rust build artifacts
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace root)
+  - `lanremotecontrol/common/Cargo.toml`, `lanremotecontrol/common/src/lib.rs`
+  - `lanremotecontrol/host/Cargo.toml`, `lanremotecontrol/host/src/main.rs`
+  - `lanremotecontrol/client/Cargo.toml`, `lanremotecontrol/client/src/main.rs`
+  - `lanremotecontrol/.gitignore`
+- **Learnings for future iterations:**
+  - Patterns discovered: Workspace resolver = "2" is needed for clean dependency resolution; use workspace-level [workspace.dependencies] to share dependency versions across packages
+  - Gotchas encountered: bincode 1.x must be explicitly specified (3.x is latest but breaking); Message header size is 11 bytes (1+4+4+2) per protocol spec — important for MTU calculations
+  - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
+---
+
 ## [2026-07-27 23:12:00] - US-003
 - What was implemented
 - Created docs/SCREEN_CAPTURE_AND_ENCODING.md with OS-specific screen capture APIs (DXGI for Windows, ScreenCaptureKit for macOS, X11/Wayland for Linux)
@@ -69,6 +135,27 @@
   - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
   - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
+## [2026-07-30 16:15:00] - US-008
+- What was implemented
+  - Created Rust Cargo workspace under `lanremotecontrol/` with workspace root Cargo.toml
+  - Implemented `common/` library crate with core message types (MessageType, Message, control command sub-types, connection management sub-types)
+  - Implemented protocol constants (DEFAULT_PORT, HEARTBEAT_INTERVAL_MS, MAX_PACKET_SIZE, ACK_TIMEOUT_MS, MAX_RETRANSMIT)
+  - Implemented session state types (ConnectionState enum, SessionConfig struct)
+  - Implemented serialization using serde + bincode with round-trip tests
+  - Created host binary crate (`host/`) and client binary crate (`client/`)
+  - Added .gitignore for Rust build artifacts
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace root)
+  - `lanremotecontrol/common/Cargo.toml`, `lanremotecontrol/common/src/lib.rs`
+  - `lanremotecontrol/host/Cargo.toml`, `lanremotecontrol/host/src/main.rs`
+  - `lanremotecontrol/client/Cargo.toml`, `lanremotecontrol/client/src/main.rs`
+  - `lanremotecontrol/.gitignore`
+- **Learnings for future iterations:**
+  - Patterns discovered: Workspace resolver = "2" is needed for clean dependency resolution; use workspace-level [workspace.dependencies] to share dependency versions across packages
+  - Gotchas encountered: bincode 1.x must be explicitly specified (3.x is latest but breaking); Message header size is 11 bytes (1+4+4+2) per protocol spec — important for MTU calculations
+  - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
+---
+
 ## [2026-07-27 23:15:00] - US-004
 - What was implemented
 - Created docs/INPUT_FORWARDING.md with client-side input capture mechanisms and host-side low-level input injection design
@@ -88,3 +175,24 @@
   - Patterns discovered: Connection panel uses minimal vertical stack layout with IP input, Connect button, and status indicator; Remote control window prioritizes maximum screen real estate with overlay controls that auto-hide after inactivity
   - Useful context: UI framework choices should prioritize low memory footprint and fast render times to avoid impacting remote control performance; aspect ratio preservation is maintained via black bars when client/host ratios differ
 ---
+## [2026-07-30 16:15:00] - US-008
+- What was implemented
+  - Created Rust Cargo workspace under `lanremotecontrol/` with workspace root Cargo.toml
+  - Implemented `common/` library crate with core message types (MessageType, Message, control command sub-types, connection management sub-types)
+  - Implemented protocol constants (DEFAULT_PORT, HEARTBEAT_INTERVAL_MS, MAX_PACKET_SIZE, ACK_TIMEOUT_MS, MAX_RETRANSMIT)
+  - Implemented session state types (ConnectionState enum, SessionConfig struct)
+  - Implemented serialization using serde + bincode with round-trip tests
+  - Created host binary crate (`host/`) and client binary crate (`client/`)
+  - Added .gitignore for Rust build artifacts
+- Files changed
+  - `lanremotecontrol/Cargo.toml` (workspace root)
+  - `lanremotecontrol/common/Cargo.toml`, `lanremotecontrol/common/src/lib.rs`
+  - `lanremotecontrol/host/Cargo.toml`, `lanremotecontrol/host/src/main.rs`
+  - `lanremotecontrol/client/Cargo.toml`, `lanremotecontrol/client/src/main.rs`
+  - `lanremotecontrol/.gitignore`
+- **Learnings for future iterations:**
+  - Patterns discovered: Workspace resolver = "2" is needed for clean dependency resolution; use workspace-level [workspace.dependencies] to share dependency versions across packages
+  - Gotchas encountered: bincode 1.x must be explicitly specified (3.x is latest but breaking); Message header size is 11 bytes (1+4+4+2) per protocol spec — important for MTU calculations
+  - Useful context: The common crate is named `lanremotecontrol-common` to avoid naming conflicts; host and client crates depend on it via path dependency
+---
+

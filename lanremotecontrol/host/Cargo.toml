@@ -8,3 +8,4 @@ description = "Host service for LANRemoteControl - runs on the machine being con
 lanremotecontrol-common = { path = "../common" }
 serde.workspace = true
 bincode.workspace = true
+ctrlc = "3.4"

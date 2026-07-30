@@ -1,7 +1,7 @@
 {
   "project": "LANRemoteControl",
   "branchName": "mission/lan-remote-control-design",
-  "description": "Design a pure LAN PC remote control software with extremely low latency, lossless image quality, and minimalist UI",
+  "description": "Design and implement a pure LAN PC remote control software with extremely low latency, lossless image quality, and minimalist UI",
   "userStories": [
     {
       "id": "US-001",
@@ -44,7 +44,7 @@
       ],
       "priority": 3,
       "passes": true,
-      "notes": "Completed: Created docs/SCREEN_CAPTURE_AND_ENCODING.md with OS-specific screen capture APIs (DXGI, ScreenCaptureKit, X11/Wayland), delta frame detection algorithm, and compression strategy (LZ4 for raw delta, Low-Delay H.264/AV1)."
+      "notes": "Completed: Created docs/SCREEN_CAPTURE_AND_ENCODING.md with OS-specific screen capture APIs (DXGI, ScreenCaptureKit, X11/Wayland), delta frame detection algorithm, and compression strategy."
     },
     {
       "id": "US-004",
@@ -59,7 +59,7 @@
       ],
       "priority": 4,
       "passes": true,
-      "notes": "Completed: Created docs/INPUT_FORWARDING.md with client-side input capture mechanisms, OS-specific injection APIs (SendInput for Windows, CGEventPost for macOS, evdev/XTest for Linux), and timestamping/ordering rules with jitter compensation."
+      "notes": "Completed: Created docs/INPUT_FORWARDING.md with client-side input capture, OS-specific injection APIs, and timestamping/ordering rules."
     },
     {
       "id": "US-005",
@@ -74,7 +74,7 @@
       ],
       "priority": 5,
       "passes": true,
-      "notes": "Completed: Created docs/UI_UX_DESIGN.md with connection panel UI components (IP input, Connect button, status indicator), remote control window UI (frame display area, fullscreen toggle, disconnect button), and interaction flow/state transitions."
+      "notes": "Completed: Created docs/UI_UX_DESIGN.md with connection panel components, remote control window UI, and interaction flow."
     },
     {
       "id": "US-006",
@@ -89,7 +89,7 @@
       ],
       "priority": 6,
       "passes": true,
-      "notes": "Completed: Created docs/HOST_CLIENT_FLOW.md with host service startup/listening/connection handling, client connection initiation/session management, and disconnect/teardown procedures."
+      "notes": "Completed: Created docs/HOST_CLIENT_FLOW.md with host/client lifecycle flows."
     },
     {
       "id": "US-007",
@@ -102,8 +102,100 @@
         "Documentation files created and properly formatted"
       ],
       "priority": 7,
+      "passes": true,
+      "notes": "Completed: Created IMPLEMENTATION_GUIDE.md with development phases and performance tuning guidelines."
+    },
+    {
+      "id": "US-008",
+      "title": "Initialize Rust Cargo workspace and core data structures",
+      "description": "As a developer, I need to set up the Rust Cargo workspace with proper project structure and define core data structures (message types, session state, configuration) for the LAN remote control software.",
+      "acceptanceCriteria": [
+        "Create Cargo workspace with host and client packages",
+        "Implement core message types as Rust structs with serialization (bincode/serde)",
+        "Implement shared protocol constants and utility functions",
+        "cargo build passes",
+        "cargo test passes for message serialization round-trip"
+      ],
+      "priority": 1,
+      "passes": true,
+      "notes": "Completed: Created Cargo workspace with common/host/client packages, implemented core message types with serde+bincode serialization, protocol constants, session state, and 16/16 tests passing."
+    },
+    {
+      "id": "US-009",
+      "title": "Implement UDP network listener and connection establishment",
+      "description": "As a developer, I need to implement the UDP network listener, connection establishment handshake, and heartbeat mechanism for the host and client sides.",
+      "acceptanceCriteria": [
+        "Implement host-side UDP listener that binds to configurable port",
+        "Implement client-side connection initiation with IP:port target",
+        "Implement connection handshake (request -> capabilities exchange -> confirm)",
+        "Implement periodic heartbeat mechanism",
+        "cargo build passes",
+        "cargo test passes for connection flow"
+      ],
+      "priority": 2,
       "passes": false,
-      "notes": ""
+      "notes": "Depends on US-008 for message types"
+    },
+    {
+      "id": "US-010",
+      "title": "Implement screen capture and LZ4 delta encoding module",
+      "description": "As a developer, I need to implement the screen capture module using Windows DXGI Desktop Duplication API and the LZ4-based delta frame compression.",
+      "acceptanceCriteria": [
+        "Implement DXGI screen capture that grabs current desktop frame",
+        "Implement tile-based delta frame detection (64x64 tiles, XXH32 hash)",
+        "Implement LZ4 compression for delta regions",
+        "Implement full frame fallback when >30% tiles changed",
+        "cargo build passes"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": "Depends on US-009 for network integration; Windows-only (DXGI)"
+    },
+    {
+      "id": "US-011",
+      "title": "Implement input capture and host injection module",
+      "description": "As a developer, I need to implement client-side keyboard/mouse event capture and host-side input injection using Windows low-level APIs.",
+      "acceptanceCriteria": [
+        "Implement client-side keyboard event capture (GetAsyncKeyState polling)",
+        "Implement client-side mouse event capture (relative delta + button states)",
+        "Implement input event serialization with timestamps and sequence numbers",
+        "Implement host-side input injection via SendInput API",
+        "cargo build passes"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": "Depends on US-009 for sending input events over network; Windows-specific"
+    },
+    {
+      "id": "US-012",
+      "title": "Implement minimalist UI - connection panel and remote control window",
+      "description": "As a user, I want a minimalist graphical interface with a connection panel (IP input, Connect button, status indicator) and a remote control window that displays the host screen.",
+      "acceptanceCriteria": [
+        "Implement connection panel with IP input field, Connect button, and status indicator",
+        "Implement remote control window that renders received screen frames",
+        "Implement fullscreen toggle and disconnect button",
+        "Wire UI to network backend (connect/disconnect flow)",
+        "cargo build passes",
+        "Application launches and shows connection panel"
+      ],
+      "priority": 5,
+      "passes": false,
+      "notes": "Depends on US-009 (network) and US-010 (screen capture) for full integration"
+    },
+    {
+      "id": "US-013",
+      "title": "Integration testing and latency benchmarking",
+      "description": "As a developer, I need to create integration tests that verify end-to-end functionality and benchmark latency to ensure performance targets are met.",
+      "acceptanceCriteria": [
+        "Create integration test for connection handshake flow",
+        "Create integration test for screen capture -> encode -> network -> decode -> render pipeline",
+        "Measure and document end-to-end latency baseline",
+        "Document performance tuning recommendations based on benchmark results",
+        "All existing tests pass"
+      ],
+      "priority": 6,
+      "passes": false,
+      "notes": "Final integration and validation"
     }
   ]
 }
