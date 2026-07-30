@@ -166,6 +166,42 @@
   - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
 ---
 
+## [2026-07-30] - US-013
+- What was implemented
+  - **11 integration tests** in `lanremotecontrol/common/tests/common_integration.rs`:
+    - `test_full_connection_handshake_simulated` — full 4-step handshake (request → capabilities → confirm → teardown) including rejected variant
+    - `test_screen_encode_decode_pipeline` — full pipeline (frame creation → tile_checksums → detect_delta_tiles → build_delta_regions → compress_delta → decompress_delta → verify) with gradient frame and half-frame modification
+    - `test_large_frame_4k_compression` — 3840×2160 checkerboard frame with timing measurements for tile checksums, LZ4 compress/decompress, delta compress/decompress, and compression ratio verification
+    - `test_input_event_serialize_deserialize_pipeline` — all 4 input event types (KeyEvent, MouseMoveEvent, MouseButtonEvent, ScrollEvent) through full serialize→deserialize→verify pipeline with 8 test cases
+    - `test_multi_message_stream_round_trip` — concatenated stream of 8 mixed messages (heartbeats, ACKs, connection management) verified round-trip
+    - `test_large_payload_message` — messages with 5 different payload sizes (0, 1, MTU, 4×MTU, 100KB)
+    - `test_captured_frame_to_encoding_pipeline` — CapturedFrame→encoding pipeline with simulated cursor change
+    - `test_multiple_frames_sequential_delta` — 3-frame sequential delta detection (baseline → small cursor → larger change)
+    - `test_various_encoding_capabilities_configs` — 4 encoding capability configurations serialized and verified
+    - `test_message_boundary_conditions` — min message, max sequence number, all message types
+    - `test_very_small_frame_encoding` — 100×100 frame edge case with single-pixel modification
+  - **Benchmark document** `docs/BENCHMARK_RESULTS.md`:
+    - Test environment documentation
+    - Latency measurements for tile checksums, LZ4 compression/decompression (720p & 4K), delta operations
+    - Compression ratios for various content types (gradient, checkerboard, uniform, delta)
+    - Network protocol timing estimates
+    - End-to-end pipeline latency estimates (3–10 ms best case on LAN)
+    - 8 performance tuning recommendations: tile size adaptation, adaptive encoding selection, thread affinity, network buffer tuning, GPU direct transfer (DXGI), frame pacing, serialisation optimisation, build profile recommendations
+- Files changed
+  - `lanremotecontrol/common/tests/common_integration.rs` (NEW — 11 integration tests)
+  - `docs/BENCHMARK_RESULTS.md` (NEW — benchmark methodology and results)
+  - `prd.json` (US-013 passes: true)
+- **Build result**: `cargo build` passes (same 6 warnings as before)
+- **Test result**: All 68 tests pass (57 existing unit + 11 new integration) across all crates
+- **Learnings for future iterations:**
+  - Patterns discovered: Integration tests in `common/tests/` are auto-discovered by Cargo for library crates; bincode adds 22 bytes of framing overhead (4 enum tag + 4 seq + 4 payload_len + 2 reserved + 8 Vec length prefix), not the 11-byte protocol header_size; the serde `#[repr(u8)]` attribute on MessageType affects the wire format differently than bincode's own enum encoding
+  - Gotchas encountered:
+    1. bincode does NOT use `#[repr(u8)]` for enum serialization — it encodes enums as u32 (4 bytes) by default, not 1 byte, so the actual serialized message overhead is 22 bytes vs the 11-byte protocol header
+    2. The concatenated stream test requires knowing each message's exact serialized length (from prior serialization) — cannot use `header_size() + payload_length` directly because bincode adds Vec length prefix
+    3. 4K frame (3840×2160 → ~31.6 MB) round-trip through LZ4 works correctly in debug mode with reasonable performance (a few ms for compress+decompress)
+    4. Checkerboard patterns compress very well with LZ4 (>10×), while gradient/random patterns may not compress much (<2×) — this is expected behavior for LZ4
+  - Useful context: Cargo's `tests/` directory is auto-discovered for library crates; `cargo test -p lanremotecontrol-common --test common_integration` runs just the integration tests; `std::time::Instant` is adequate for millisecond-level benchmarks; delta detection with 64×64 tiles on 4K produces 2040 tiles, manageable in <20ms even in debug mode
+
 ## [2026-07-27 22:32:00] - US-001
 - What was implemented
 - Created project root directory structure (docs/, src-host/, src-client/)
@@ -318,6 +354,42 @@
     5. Can't borrow `self` mutably multiple times in `update()` — need to match on state clone or restructure logic to avoid borrow conflicts
   - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
 ---
+
+## [2026-07-30] - US-013
+- What was implemented
+  - **11 integration tests** in `lanremotecontrol/common/tests/common_integration.rs`:
+    - `test_full_connection_handshake_simulated` — full 4-step handshake (request → capabilities → confirm → teardown) including rejected variant
+    - `test_screen_encode_decode_pipeline` — full pipeline (frame creation → tile_checksums → detect_delta_tiles → build_delta_regions → compress_delta → decompress_delta → verify) with gradient frame and half-frame modification
+    - `test_large_frame_4k_compression` — 3840×2160 checkerboard frame with timing measurements for tile checksums, LZ4 compress/decompress, delta compress/decompress, and compression ratio verification
+    - `test_input_event_serialize_deserialize_pipeline` — all 4 input event types (KeyEvent, MouseMoveEvent, MouseButtonEvent, ScrollEvent) through full serialize→deserialize→verify pipeline with 8 test cases
+    - `test_multi_message_stream_round_trip` — concatenated stream of 8 mixed messages (heartbeats, ACKs, connection management) verified round-trip
+    - `test_large_payload_message` — messages with 5 different payload sizes (0, 1, MTU, 4×MTU, 100KB)
+    - `test_captured_frame_to_encoding_pipeline` — CapturedFrame→encoding pipeline with simulated cursor change
+    - `test_multiple_frames_sequential_delta` — 3-frame sequential delta detection (baseline → small cursor → larger change)
+    - `test_various_encoding_capabilities_configs` — 4 encoding capability configurations serialized and verified
+    - `test_message_boundary_conditions` — min message, max sequence number, all message types
+    - `test_very_small_frame_encoding` — 100×100 frame edge case with single-pixel modification
+  - **Benchmark document** `docs/BENCHMARK_RESULTS.md`:
+    - Test environment documentation
+    - Latency measurements for tile checksums, LZ4 compression/decompression (720p & 4K), delta operations
+    - Compression ratios for various content types (gradient, checkerboard, uniform, delta)
+    - Network protocol timing estimates
+    - End-to-end pipeline latency estimates (3–10 ms best case on LAN)
+    - 8 performance tuning recommendations: tile size adaptation, adaptive encoding selection, thread affinity, network buffer tuning, GPU direct transfer (DXGI), frame pacing, serialisation optimisation, build profile recommendations
+- Files changed
+  - `lanremotecontrol/common/tests/common_integration.rs` (NEW — 11 integration tests)
+  - `docs/BENCHMARK_RESULTS.md` (NEW — benchmark methodology and results)
+  - `prd.json` (US-013 passes: true)
+- **Build result**: `cargo build` passes (same 6 warnings as before)
+- **Test result**: All 68 tests pass (57 existing unit + 11 new integration) across all crates
+- **Learnings for future iterations:**
+  - Patterns discovered: Integration tests in `common/tests/` are auto-discovered by Cargo for library crates; bincode adds 22 bytes of framing overhead (4 enum tag + 4 seq + 4 payload_len + 2 reserved + 8 Vec length prefix), not the 11-byte protocol header_size; the serde `#[repr(u8)]` attribute on MessageType affects the wire format differently than bincode's own enum encoding
+  - Gotchas encountered:
+    1. bincode does NOT use `#[repr(u8)]` for enum serialization — it encodes enums as u32 (4 bytes) by default, not 1 byte, so the actual serialized message overhead is 22 bytes vs the 11-byte protocol header
+    2. The concatenated stream test requires knowing each message's exact serialized length (from prior serialization) — cannot use `header_size() + payload_length` directly because bincode adds Vec length prefix
+    3. 4K frame (3840×2160 → ~31.6 MB) round-trip through LZ4 works correctly in debug mode with reasonable performance (a few ms for compress+decompress)
+    4. Checkerboard patterns compress very well with LZ4 (>10×), while gradient/random patterns may not compress much (<2×) — this is expected behavior for LZ4
+  - Useful context: Cargo's `tests/` directory is auto-discovered for library crates; `cargo test -p lanremotecontrol-common --test common_integration` runs just the integration tests; `std::time::Instant` is adequate for millisecond-level benchmarks; delta detection with 64×64 tiles on 4K produces 2040 tiles, manageable in <20ms even in debug mode
 
 ## [2026-07-27 22:50:00] - US-002
 - What was implemented
@@ -474,6 +546,42 @@
   - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
 ---
 
+## [2026-07-30] - US-013
+- What was implemented
+  - **11 integration tests** in `lanremotecontrol/common/tests/common_integration.rs`:
+    - `test_full_connection_handshake_simulated` — full 4-step handshake (request → capabilities → confirm → teardown) including rejected variant
+    - `test_screen_encode_decode_pipeline` — full pipeline (frame creation → tile_checksums → detect_delta_tiles → build_delta_regions → compress_delta → decompress_delta → verify) with gradient frame and half-frame modification
+    - `test_large_frame_4k_compression` — 3840×2160 checkerboard frame with timing measurements for tile checksums, LZ4 compress/decompress, delta compress/decompress, and compression ratio verification
+    - `test_input_event_serialize_deserialize_pipeline` — all 4 input event types (KeyEvent, MouseMoveEvent, MouseButtonEvent, ScrollEvent) through full serialize→deserialize→verify pipeline with 8 test cases
+    - `test_multi_message_stream_round_trip` — concatenated stream of 8 mixed messages (heartbeats, ACKs, connection management) verified round-trip
+    - `test_large_payload_message` — messages with 5 different payload sizes (0, 1, MTU, 4×MTU, 100KB)
+    - `test_captured_frame_to_encoding_pipeline` — CapturedFrame→encoding pipeline with simulated cursor change
+    - `test_multiple_frames_sequential_delta` — 3-frame sequential delta detection (baseline → small cursor → larger change)
+    - `test_various_encoding_capabilities_configs` — 4 encoding capability configurations serialized and verified
+    - `test_message_boundary_conditions` — min message, max sequence number, all message types
+    - `test_very_small_frame_encoding` — 100×100 frame edge case with single-pixel modification
+  - **Benchmark document** `docs/BENCHMARK_RESULTS.md`:
+    - Test environment documentation
+    - Latency measurements for tile checksums, LZ4 compression/decompression (720p & 4K), delta operations
+    - Compression ratios for various content types (gradient, checkerboard, uniform, delta)
+    - Network protocol timing estimates
+    - End-to-end pipeline latency estimates (3–10 ms best case on LAN)
+    - 8 performance tuning recommendations: tile size adaptation, adaptive encoding selection, thread affinity, network buffer tuning, GPU direct transfer (DXGI), frame pacing, serialisation optimisation, build profile recommendations
+- Files changed
+  - `lanremotecontrol/common/tests/common_integration.rs` (NEW — 11 integration tests)
+  - `docs/BENCHMARK_RESULTS.md` (NEW — benchmark methodology and results)
+  - `prd.json` (US-013 passes: true)
+- **Build result**: `cargo build` passes (same 6 warnings as before)
+- **Test result**: All 68 tests pass (57 existing unit + 11 new integration) across all crates
+- **Learnings for future iterations:**
+  - Patterns discovered: Integration tests in `common/tests/` are auto-discovered by Cargo for library crates; bincode adds 22 bytes of framing overhead (4 enum tag + 4 seq + 4 payload_len + 2 reserved + 8 Vec length prefix), not the 11-byte protocol header_size; the serde `#[repr(u8)]` attribute on MessageType affects the wire format differently than bincode's own enum encoding
+  - Gotchas encountered:
+    1. bincode does NOT use `#[repr(u8)]` for enum serialization — it encodes enums as u32 (4 bytes) by default, not 1 byte, so the actual serialized message overhead is 22 bytes vs the 11-byte protocol header
+    2. The concatenated stream test requires knowing each message's exact serialized length (from prior serialization) — cannot use `header_size() + payload_length` directly because bincode adds Vec length prefix
+    3. 4K frame (3840×2160 → ~31.6 MB) round-trip through LZ4 works correctly in debug mode with reasonable performance (a few ms for compress+decompress)
+    4. Checkerboard patterns compress very well with LZ4 (>10×), while gradient/random patterns may not compress much (<2×) — this is expected behavior for LZ4
+  - Useful context: Cargo's `tests/` directory is auto-discovered for library crates; `cargo test -p lanremotecontrol-common --test common_integration` runs just the integration tests; `std::time::Instant` is adequate for millisecond-level benchmarks; delta detection with 64×64 tiles on 4K produces 2040 tiles, manageable in <20ms even in debug mode
+
 ## [2026-07-27 23:12:00] - US-003
 - What was implemented
 - Created docs/SCREEN_CAPTURE_AND_ENCODING.md with OS-specific screen capture APIs (DXGI for Windows, ScreenCaptureKit for macOS, X11/Wayland for Linux)
@@ -628,6 +736,42 @@
     5. Can't borrow `self` mutably multiple times in `update()` — need to match on state clone or restructure logic to avoid borrow conflicts
   - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
 ---
+
+## [2026-07-30] - US-013
+- What was implemented
+  - **11 integration tests** in `lanremotecontrol/common/tests/common_integration.rs`:
+    - `test_full_connection_handshake_simulated` — full 4-step handshake (request → capabilities → confirm → teardown) including rejected variant
+    - `test_screen_encode_decode_pipeline` — full pipeline (frame creation → tile_checksums → detect_delta_tiles → build_delta_regions → compress_delta → decompress_delta → verify) with gradient frame and half-frame modification
+    - `test_large_frame_4k_compression` — 3840×2160 checkerboard frame with timing measurements for tile checksums, LZ4 compress/decompress, delta compress/decompress, and compression ratio verification
+    - `test_input_event_serialize_deserialize_pipeline` — all 4 input event types (KeyEvent, MouseMoveEvent, MouseButtonEvent, ScrollEvent) through full serialize→deserialize→verify pipeline with 8 test cases
+    - `test_multi_message_stream_round_trip` — concatenated stream of 8 mixed messages (heartbeats, ACKs, connection management) verified round-trip
+    - `test_large_payload_message` — messages with 5 different payload sizes (0, 1, MTU, 4×MTU, 100KB)
+    - `test_captured_frame_to_encoding_pipeline` — CapturedFrame→encoding pipeline with simulated cursor change
+    - `test_multiple_frames_sequential_delta` — 3-frame sequential delta detection (baseline → small cursor → larger change)
+    - `test_various_encoding_capabilities_configs` — 4 encoding capability configurations serialized and verified
+    - `test_message_boundary_conditions` — min message, max sequence number, all message types
+    - `test_very_small_frame_encoding` — 100×100 frame edge case with single-pixel modification
+  - **Benchmark document** `docs/BENCHMARK_RESULTS.md`:
+    - Test environment documentation
+    - Latency measurements for tile checksums, LZ4 compression/decompression (720p & 4K), delta operations
+    - Compression ratios for various content types (gradient, checkerboard, uniform, delta)
+    - Network protocol timing estimates
+    - End-to-end pipeline latency estimates (3–10 ms best case on LAN)
+    - 8 performance tuning recommendations: tile size adaptation, adaptive encoding selection, thread affinity, network buffer tuning, GPU direct transfer (DXGI), frame pacing, serialisation optimisation, build profile recommendations
+- Files changed
+  - `lanremotecontrol/common/tests/common_integration.rs` (NEW — 11 integration tests)
+  - `docs/BENCHMARK_RESULTS.md` (NEW — benchmark methodology and results)
+  - `prd.json` (US-013 passes: true)
+- **Build result**: `cargo build` passes (same 6 warnings as before)
+- **Test result**: All 68 tests pass (57 existing unit + 11 new integration) across all crates
+- **Learnings for future iterations:**
+  - Patterns discovered: Integration tests in `common/tests/` are auto-discovered by Cargo for library crates; bincode adds 22 bytes of framing overhead (4 enum tag + 4 seq + 4 payload_len + 2 reserved + 8 Vec length prefix), not the 11-byte protocol header_size; the serde `#[repr(u8)]` attribute on MessageType affects the wire format differently than bincode's own enum encoding
+  - Gotchas encountered:
+    1. bincode does NOT use `#[repr(u8)]` for enum serialization — it encodes enums as u32 (4 bytes) by default, not 1 byte, so the actual serialized message overhead is 22 bytes vs the 11-byte protocol header
+    2. The concatenated stream test requires knowing each message's exact serialized length (from prior serialization) — cannot use `header_size() + payload_length` directly because bincode adds Vec length prefix
+    3. 4K frame (3840×2160 → ~31.6 MB) round-trip through LZ4 works correctly in debug mode with reasonable performance (a few ms for compress+decompress)
+    4. Checkerboard patterns compress very well with LZ4 (>10×), while gradient/random patterns may not compress much (<2×) — this is expected behavior for LZ4
+  - Useful context: Cargo's `tests/` directory is auto-discovered for library crates; `cargo test -p lanremotecontrol-common --test common_integration` runs just the integration tests; `std::time::Instant` is adequate for millisecond-level benchmarks; delta detection with 64×64 tiles on 4K produces 2040 tiles, manageable in <20ms even in debug mode
 
 ## [2026-07-27 23:15:00] - US-004
 - What was implemented
@@ -784,4 +928,40 @@
     5. Can't borrow `self` mutably multiple times in `update()` — need to match on state clone or restructure logic to avoid borrow conflicts
   - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
 ---
+
+## [2026-07-30] - US-013
+- What was implemented
+  - **11 integration tests** in `lanremotecontrol/common/tests/common_integration.rs`:
+    - `test_full_connection_handshake_simulated` — full 4-step handshake (request → capabilities → confirm → teardown) including rejected variant
+    - `test_screen_encode_decode_pipeline` — full pipeline (frame creation → tile_checksums → detect_delta_tiles → build_delta_regions → compress_delta → decompress_delta → verify) with gradient frame and half-frame modification
+    - `test_large_frame_4k_compression` — 3840×2160 checkerboard frame with timing measurements for tile checksums, LZ4 compress/decompress, delta compress/decompress, and compression ratio verification
+    - `test_input_event_serialize_deserialize_pipeline` — all 4 input event types (KeyEvent, MouseMoveEvent, MouseButtonEvent, ScrollEvent) through full serialize→deserialize→verify pipeline with 8 test cases
+    - `test_multi_message_stream_round_trip` — concatenated stream of 8 mixed messages (heartbeats, ACKs, connection management) verified round-trip
+    - `test_large_payload_message` — messages with 5 different payload sizes (0, 1, MTU, 4×MTU, 100KB)
+    - `test_captured_frame_to_encoding_pipeline` — CapturedFrame→encoding pipeline with simulated cursor change
+    - `test_multiple_frames_sequential_delta` — 3-frame sequential delta detection (baseline → small cursor → larger change)
+    - `test_various_encoding_capabilities_configs` — 4 encoding capability configurations serialized and verified
+    - `test_message_boundary_conditions` — min message, max sequence number, all message types
+    - `test_very_small_frame_encoding` — 100×100 frame edge case with single-pixel modification
+  - **Benchmark document** `docs/BENCHMARK_RESULTS.md`:
+    - Test environment documentation
+    - Latency measurements for tile checksums, LZ4 compression/decompression (720p & 4K), delta operations
+    - Compression ratios for various content types (gradient, checkerboard, uniform, delta)
+    - Network protocol timing estimates
+    - End-to-end pipeline latency estimates (3–10 ms best case on LAN)
+    - 8 performance tuning recommendations: tile size adaptation, adaptive encoding selection, thread affinity, network buffer tuning, GPU direct transfer (DXGI), frame pacing, serialisation optimisation, build profile recommendations
+- Files changed
+  - `lanremotecontrol/common/tests/common_integration.rs` (NEW — 11 integration tests)
+  - `docs/BENCHMARK_RESULTS.md` (NEW — benchmark methodology and results)
+  - `prd.json` (US-013 passes: true)
+- **Build result**: `cargo build` passes (same 6 warnings as before)
+- **Test result**: All 68 tests pass (57 existing unit + 11 new integration) across all crates
+- **Learnings for future iterations:**
+  - Patterns discovered: Integration tests in `common/tests/` are auto-discovered by Cargo for library crates; bincode adds 22 bytes of framing overhead (4 enum tag + 4 seq + 4 payload_len + 2 reserved + 8 Vec length prefix), not the 11-byte protocol header_size; the serde `#[repr(u8)]` attribute on MessageType affects the wire format differently than bincode's own enum encoding
+  - Gotchas encountered:
+    1. bincode does NOT use `#[repr(u8)]` for enum serialization — it encodes enums as u32 (4 bytes) by default, not 1 byte, so the actual serialized message overhead is 22 bytes vs the 11-byte protocol header
+    2. The concatenated stream test requires knowing each message's exact serialized length (from prior serialization) — cannot use `header_size() + payload_length` directly because bincode adds Vec length prefix
+    3. 4K frame (3840×2160 → ~31.6 MB) round-trip through LZ4 works correctly in debug mode with reasonable performance (a few ms for compress+decompress)
+    4. Checkerboard patterns compress very well with LZ4 (>10×), while gradient/random patterns may not compress much (<2×) — this is expected behavior for LZ4
+  - Useful context: Cargo's `tests/` directory is auto-discovered for library crates; `cargo test -p lanremotecontrol-common --test common_integration` runs just the integration tests; `std::time::Instant` is adequate for millisecond-level benchmarks; delta detection with 64×64 tiles on 4K produces 2040 tiles, manageable in <20ms even in debug mode
 
