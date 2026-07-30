@@ -133,6 +133,39 @@
   - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
 ---
 
+## [2026-07-30] - US-012
+- What was implemented
+  - **Minimalist GUI** using egui 0.27 + eframe 0.27 in `client/src/ui.rs`:
+    - `RemoteControlApp` struct implementing `eframe::App` trait
+    - `AppState` enum: Disconnected, Connecting, Connected {encoding, width, height}, Error(String)
+    - Connection panel with IP input field (TextEdit), port input field, colored status indicator, and Connect/Disconnect button
+    - Remote control window with dark background, centered connection info text, FPS/latency info bottom-right
+    - Fullscreen toggle and Disconnect overlay buttons in top-right corner
+    - Error panel with retry button when handshake/connection fails
+    - Async handshake via `std::thread::spawn` with `Arc<Mutex<Option<Result>>>` channel
+    - `ctx.request_repaint()` for smooth animation during connecting state
+  - **Updated `client/src/main.rs`**: replaced CLI logic with `eframe::run_native()` call
+  - **Updated `client/Cargo.toml`**: added `eframe = { version = "0.27", features = ["default_system_theme", "glow"] }` and `egui = "0.27"`
+  - Added `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` to hide console window in release builds
+- Files changed
+  - `lanremotecontrol/client/Cargo.toml` (added eframe, egui deps)
+  - `lanremotecontrol/client/src/ui.rs` (NEW — egui UI module)
+  - `lanremotecontrol/client/src/main.rs` (rewritten to use eframe)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-012 passes: true)
+- **Build result**: `cargo build` passes with 6 warnings (unused imports/dead code from input.rs and net.rs — expected until full integration with US-013)
+- **Test result**: All 57 tests pass (2 client + 39 common + 16 host)
+- **Learnings for future iterations:**
+  - Patterns discovered: eframe 0.27 uses `eframe::App::update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame)`. Use `egui::CentralPanel` for the main content area. `ui.vertical_centered()` with `egui::Frame::group()` for structured panels. `ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true/false))` for fullscreen toggling. `ctx.request_repaint()` needed for continuous updates during connecting state.
+  - Gotchas encountered:
+    1. eframe 0.27's `eframe::NativeOptions` has no `always_on_top`, `decorated` etc. directly — use `viewport: eframe::egui::ViewportBuilder::default()` for window properties
+    2. `egui::ViewportCommand::Fullscreen(bool)` replaces the older `Frame::set_fullscreen()` API
+    3. `egui::CentralPanel` is not an `egui::Panel` — it's a free function `egui::CentralPanel::default().show(ctx, |ui| {...})`
+    4. For overlay buttons over the screen area, use `ui.put(rect, widget)` with absolute positions calculated from `ui.max_rect()`
+    5. Can't borrow `self` mutably multiple times in `update()` — need to match on state clone or restructure logic to avoid borrow conflicts
+  - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
+---
+
 ## [2026-07-27 22:32:00] - US-001
 - What was implemented
 - Created project root directory structure (docs/, src-host/, src-client/)
@@ -251,6 +284,39 @@
     4. `dwExtraInfo` in both `KEYBDINPUT` and `MOUSEINPUT` is `usize`, not `*mut c_void` — use `0usize`
     5. There is no `KEYEVENTF_KEYDOWN` constant in windows-rs 0.58 (value 0) — use `KEYBD_EVENT_FLAGS(0)`
   - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
+---
+
+## [2026-07-30] - US-012
+- What was implemented
+  - **Minimalist GUI** using egui 0.27 + eframe 0.27 in `client/src/ui.rs`:
+    - `RemoteControlApp` struct implementing `eframe::App` trait
+    - `AppState` enum: Disconnected, Connecting, Connected {encoding, width, height}, Error(String)
+    - Connection panel with IP input field (TextEdit), port input field, colored status indicator, and Connect/Disconnect button
+    - Remote control window with dark background, centered connection info text, FPS/latency info bottom-right
+    - Fullscreen toggle and Disconnect overlay buttons in top-right corner
+    - Error panel with retry button when handshake/connection fails
+    - Async handshake via `std::thread::spawn` with `Arc<Mutex<Option<Result>>>` channel
+    - `ctx.request_repaint()` for smooth animation during connecting state
+  - **Updated `client/src/main.rs`**: replaced CLI logic with `eframe::run_native()` call
+  - **Updated `client/Cargo.toml`**: added `eframe = { version = "0.27", features = ["default_system_theme", "glow"] }` and `egui = "0.27"`
+  - Added `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` to hide console window in release builds
+- Files changed
+  - `lanremotecontrol/client/Cargo.toml` (added eframe, egui deps)
+  - `lanremotecontrol/client/src/ui.rs` (NEW — egui UI module)
+  - `lanremotecontrol/client/src/main.rs` (rewritten to use eframe)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-012 passes: true)
+- **Build result**: `cargo build` passes with 6 warnings (unused imports/dead code from input.rs and net.rs — expected until full integration with US-013)
+- **Test result**: All 57 tests pass (2 client + 39 common + 16 host)
+- **Learnings for future iterations:**
+  - Patterns discovered: eframe 0.27 uses `eframe::App::update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame)`. Use `egui::CentralPanel` for the main content area. `ui.vertical_centered()` with `egui::Frame::group()` for structured panels. `ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true/false))` for fullscreen toggling. `ctx.request_repaint()` needed for continuous updates during connecting state.
+  - Gotchas encountered:
+    1. eframe 0.27's `eframe::NativeOptions` has no `always_on_top`, `decorated` etc. directly — use `viewport: eframe::egui::ViewportBuilder::default()` for window properties
+    2. `egui::ViewportCommand::Fullscreen(bool)` replaces the older `Frame::set_fullscreen()` API
+    3. `egui::CentralPanel` is not an `egui::Panel` — it's a free function `egui::CentralPanel::default().show(ctx, |ui| {...})`
+    4. For overlay buttons over the screen area, use `ui.put(rect, widget)` with absolute positions calculated from `ui.max_rect()`
+    5. Can't borrow `self` mutably multiple times in `update()` — need to match on state clone or restructure logic to avoid borrow conflicts
+  - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
 ---
 
 ## [2026-07-27 22:50:00] - US-002
@@ -375,6 +441,39 @@
   - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
 ---
 
+## [2026-07-30] - US-012
+- What was implemented
+  - **Minimalist GUI** using egui 0.27 + eframe 0.27 in `client/src/ui.rs`:
+    - `RemoteControlApp` struct implementing `eframe::App` trait
+    - `AppState` enum: Disconnected, Connecting, Connected {encoding, width, height}, Error(String)
+    - Connection panel with IP input field (TextEdit), port input field, colored status indicator, and Connect/Disconnect button
+    - Remote control window with dark background, centered connection info text, FPS/latency info bottom-right
+    - Fullscreen toggle and Disconnect overlay buttons in top-right corner
+    - Error panel with retry button when handshake/connection fails
+    - Async handshake via `std::thread::spawn` with `Arc<Mutex<Option<Result>>>` channel
+    - `ctx.request_repaint()` for smooth animation during connecting state
+  - **Updated `client/src/main.rs`**: replaced CLI logic with `eframe::run_native()` call
+  - **Updated `client/Cargo.toml`**: added `eframe = { version = "0.27", features = ["default_system_theme", "glow"] }` and `egui = "0.27"`
+  - Added `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` to hide console window in release builds
+- Files changed
+  - `lanremotecontrol/client/Cargo.toml` (added eframe, egui deps)
+  - `lanremotecontrol/client/src/ui.rs` (NEW — egui UI module)
+  - `lanremotecontrol/client/src/main.rs` (rewritten to use eframe)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-012 passes: true)
+- **Build result**: `cargo build` passes with 6 warnings (unused imports/dead code from input.rs and net.rs — expected until full integration with US-013)
+- **Test result**: All 57 tests pass (2 client + 39 common + 16 host)
+- **Learnings for future iterations:**
+  - Patterns discovered: eframe 0.27 uses `eframe::App::update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame)`. Use `egui::CentralPanel` for the main content area. `ui.vertical_centered()` with `egui::Frame::group()` for structured panels. `ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true/false))` for fullscreen toggling. `ctx.request_repaint()` needed for continuous updates during connecting state.
+  - Gotchas encountered:
+    1. eframe 0.27's `eframe::NativeOptions` has no `always_on_top`, `decorated` etc. directly — use `viewport: eframe::egui::ViewportBuilder::default()` for window properties
+    2. `egui::ViewportCommand::Fullscreen(bool)` replaces the older `Frame::set_fullscreen()` API
+    3. `egui::CentralPanel` is not an `egui::Panel` — it's a free function `egui::CentralPanel::default().show(ctx, |ui| {...})`
+    4. For overlay buttons over the screen area, use `ui.put(rect, widget)` with absolute positions calculated from `ui.max_rect()`
+    5. Can't borrow `self` mutably multiple times in `update()` — need to match on state clone or restructure logic to avoid borrow conflicts
+  - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
+---
+
 ## [2026-07-27 23:12:00] - US-003
 - What was implemented
 - Created docs/SCREEN_CAPTURE_AND_ENCODING.md with OS-specific screen capture APIs (DXGI for Windows, ScreenCaptureKit for macOS, X11/Wayland for Linux)
@@ -495,6 +594,39 @@
     4. `dwExtraInfo` in both `KEYBDINPUT` and `MOUSEINPUT` is `usize`, not `*mut c_void` — use `0usize`
     5. There is no `KEYEVENTF_KEYDOWN` constant in windows-rs 0.58 (value 0) — use `KEYBD_EVENT_FLAGS(0)`
   - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
+---
+
+## [2026-07-30] - US-012
+- What was implemented
+  - **Minimalist GUI** using egui 0.27 + eframe 0.27 in `client/src/ui.rs`:
+    - `RemoteControlApp` struct implementing `eframe::App` trait
+    - `AppState` enum: Disconnected, Connecting, Connected {encoding, width, height}, Error(String)
+    - Connection panel with IP input field (TextEdit), port input field, colored status indicator, and Connect/Disconnect button
+    - Remote control window with dark background, centered connection info text, FPS/latency info bottom-right
+    - Fullscreen toggle and Disconnect overlay buttons in top-right corner
+    - Error panel with retry button when handshake/connection fails
+    - Async handshake via `std::thread::spawn` with `Arc<Mutex<Option<Result>>>` channel
+    - `ctx.request_repaint()` for smooth animation during connecting state
+  - **Updated `client/src/main.rs`**: replaced CLI logic with `eframe::run_native()` call
+  - **Updated `client/Cargo.toml`**: added `eframe = { version = "0.27", features = ["default_system_theme", "glow"] }` and `egui = "0.27"`
+  - Added `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` to hide console window in release builds
+- Files changed
+  - `lanremotecontrol/client/Cargo.toml` (added eframe, egui deps)
+  - `lanremotecontrol/client/src/ui.rs` (NEW — egui UI module)
+  - `lanremotecontrol/client/src/main.rs` (rewritten to use eframe)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-012 passes: true)
+- **Build result**: `cargo build` passes with 6 warnings (unused imports/dead code from input.rs and net.rs — expected until full integration with US-013)
+- **Test result**: All 57 tests pass (2 client + 39 common + 16 host)
+- **Learnings for future iterations:**
+  - Patterns discovered: eframe 0.27 uses `eframe::App::update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame)`. Use `egui::CentralPanel` for the main content area. `ui.vertical_centered()` with `egui::Frame::group()` for structured panels. `ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true/false))` for fullscreen toggling. `ctx.request_repaint()` needed for continuous updates during connecting state.
+  - Gotchas encountered:
+    1. eframe 0.27's `eframe::NativeOptions` has no `always_on_top`, `decorated` etc. directly — use `viewport: eframe::egui::ViewportBuilder::default()` for window properties
+    2. `egui::ViewportCommand::Fullscreen(bool)` replaces the older `Frame::set_fullscreen()` API
+    3. `egui::CentralPanel` is not an `egui::Panel` — it's a free function `egui::CentralPanel::default().show(ctx, |ui| {...})`
+    4. For overlay buttons over the screen area, use `ui.put(rect, widget)` with absolute positions calculated from `ui.max_rect()`
+    5. Can't borrow `self` mutably multiple times in `update()` — need to match on state clone or restructure logic to avoid borrow conflicts
+  - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
 ---
 
 ## [2026-07-27 23:15:00] - US-004
@@ -618,5 +750,38 @@
     4. `dwExtraInfo` in both `KEYBDINPUT` and `MOUSEINPUT` is `usize`, not `*mut c_void` — use `0usize`
     5. There is no `KEYEVENTF_KEYDOWN` constant in windows-rs 0.58 (value 0) — use `KEYBD_EVENT_FLAGS(0)`
   - Useful context: `INPUT_0` is a union-like struct with `mi`, `ki`, `hi` fields; using `Default::default()` zero-initializes it. `POINT` is in `windows::Win32::Foundation`. The SendInput batch approach (single call with many INPUTs) ensures atomic injection of related events (e.g., simultaneous mouse button + position).
+---
+
+## [2026-07-30] - US-012
+- What was implemented
+  - **Minimalist GUI** using egui 0.27 + eframe 0.27 in `client/src/ui.rs`:
+    - `RemoteControlApp` struct implementing `eframe::App` trait
+    - `AppState` enum: Disconnected, Connecting, Connected {encoding, width, height}, Error(String)
+    - Connection panel with IP input field (TextEdit), port input field, colored status indicator, and Connect/Disconnect button
+    - Remote control window with dark background, centered connection info text, FPS/latency info bottom-right
+    - Fullscreen toggle and Disconnect overlay buttons in top-right corner
+    - Error panel with retry button when handshake/connection fails
+    - Async handshake via `std::thread::spawn` with `Arc<Mutex<Option<Result>>>` channel
+    - `ctx.request_repaint()` for smooth animation during connecting state
+  - **Updated `client/src/main.rs`**: replaced CLI logic with `eframe::run_native()` call
+  - **Updated `client/Cargo.toml`**: added `eframe = { version = "0.27", features = ["default_system_theme", "glow"] }` and `egui = "0.27"`
+  - Added `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` to hide console window in release builds
+- Files changed
+  - `lanremotecontrol/client/Cargo.toml` (added eframe, egui deps)
+  - `lanremotecontrol/client/src/ui.rs` (NEW — egui UI module)
+  - `lanremotecontrol/client/src/main.rs` (rewritten to use eframe)
+  - `lanremotecontrol/Cargo.lock` (auto)
+  - `prd.json` (US-012 passes: true)
+- **Build result**: `cargo build` passes with 6 warnings (unused imports/dead code from input.rs and net.rs — expected until full integration with US-013)
+- **Test result**: All 57 tests pass (2 client + 39 common + 16 host)
+- **Learnings for future iterations:**
+  - Patterns discovered: eframe 0.27 uses `eframe::App::update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame)`. Use `egui::CentralPanel` for the main content area. `ui.vertical_centered()` with `egui::Frame::group()` for structured panels. `ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true/false))` for fullscreen toggling. `ctx.request_repaint()` needed for continuous updates during connecting state.
+  - Gotchas encountered:
+    1. eframe 0.27's `eframe::NativeOptions` has no `always_on_top`, `decorated` etc. directly — use `viewport: eframe::egui::ViewportBuilder::default()` for window properties
+    2. `egui::ViewportCommand::Fullscreen(bool)` replaces the older `Frame::set_fullscreen()` API
+    3. `egui::CentralPanel` is not an `egui::Panel` — it's a free function `egui::CentralPanel::default().show(ctx, |ui| {...})`
+    4. For overlay buttons over the screen area, use `ui.put(rect, widget)` with absolute positions calculated from `ui.max_rect()`
+    5. Can't borrow `self` mutably multiple times in `update()` — need to match on state clone or restructure logic to avoid borrow conflicts
+  - Useful context: `egui::Color32::from_rgba_premultiplied(r,g,b,a)` for transparency on overlay buttons. `ui.colored_label()` replaces manual text painting for simple labels. `ui.fonts(|f| f.layout_no_wrap(...))` for measuring text bounds before drawing. `egui::Vec2` is aliased at top level. `egui::pos2` and `egui::rect` for geometry. `ui.add_sized([w, h], widget)` for fixed-size widgets.
 ---
 

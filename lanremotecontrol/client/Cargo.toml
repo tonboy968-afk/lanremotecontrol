@@ -8,4 +8,7 @@ description = "Client application for LANRemoteControl - controls the remote mac
 lanremotecontrol-common = { path = "../common" }
 serde.workspace = true
 bincode.workspace = true
+eframe = { version = "0.27", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.27"
+# Keep windows dep only for Windows builds
 windows.workspace = true

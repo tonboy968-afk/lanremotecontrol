@@ -179,8 +179,8 @@
         "Application launches and shows connection panel"
       ],
       "priority": 5,
-      "passes": false,
-      "notes": "Depends on US-009 (network) and US-010 (screen capture) for full integration"
+      "passes": true,
+      "notes": "Completed: Implemented egui/eframe GUI with connection panel (IP input, port input, Connect button, status indicator), remote control window (screen area placeholder, fullscreen toggle, disconnect overlay buttons), and async handshake via UdpClient/HandshakeClient thread. All 57 tests pass."
     },
     {
       "id": "US-013",
