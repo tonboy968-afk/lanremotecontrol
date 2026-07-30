@@ -74,13 +74,15 @@ pub struct RemoteControlApp {
     last_mouse_remote_pos: Option<(f32, f32)>,
     /// 上一帧的修饰键状态 (用于检测 Shift/Ctrl/Alt 变化)
     last_modifiers: egui::Modifiers,
+    /// 自动连接标志 (测试用)
+    auto_connect: bool,
 }
 
 impl Default for RemoteControlApp {
     fn default() -> Self {
         Self {
             state: AppState::Disconnected,
-            host_ip: String::new(),
+            host_ip: String::from("127.0.0.1"),
             port_text: DEFAULT_PORT.to_string(),
             host_port: DEFAULT_PORT,
             client: None,
@@ -96,6 +98,7 @@ impl Default for RemoteControlApp {
             input_seq: 1,
             last_mouse_remote_pos: None,
             last_modifiers: egui::Modifiers::default(),
+            auto_connect: true,
         }
     }
 }
@@ -167,8 +170,17 @@ impl RemoteControlApp {
                     [w as usize, h as usize],
                     &rgba,
                 );
-                self.remote_texture =
-                    Some(ctx.load_texture("remote-screen", image, Default::default()));
+
+                // 复用已有纹理句柄，避免每帧重建
+                if let Some(tex) = &mut self.remote_texture {
+                    tex.set(
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                } else {
+                    self.remote_texture =
+                        Some(ctx.load_texture("remote-screen", image, Default::default()));
+                }
                 self.frame_count += 1;
             }
         }
@@ -580,6 +592,12 @@ impl RemoteControlApp {
 impl eframe::App for RemoteControlApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // 处理异步握手结果
+        // 自动连接 (测试模式)
+        if self.auto_connect && self.state == AppState::Disconnected {
+            self.auto_connect = false;
+            self.start_connect();
+        }
+
         if let Ok(mut guard) = self.handshake_result.lock() {
             if let Some(result) = guard.take() {
                 match result {

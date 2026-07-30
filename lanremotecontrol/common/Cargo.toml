@@ -9,3 +9,7 @@ serde.workspace = true
 bincode.workspace = true
 lz4.workspace = true
 xxhash-rust.workspace = true
+
+[[bin]]
+name = "test-serialization"
+path = "src/bin/test_serialization.rs"

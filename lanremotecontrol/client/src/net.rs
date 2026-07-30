@@ -41,6 +41,25 @@ impl UdpClient {
         let socket = UdpSocket::bind(local_addr)?;
         socket.connect(addr)?;
 
+        // Increase UDP buffer sizes to handle burst of frame chunks
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+            const SOL_SOCKET: i32 = 0xFFFF;
+            const SO_RCVBUF: i32 = 0x1002;
+            const SO_SNDBUF: i32 = 0x1001;
+            let buf_size: i32 = 4 * 1024 * 1024; // 4MB
+            unsafe {
+                let raw = socket.as_raw_socket() as usize;
+                #[link(name = "ws2_32")]
+                extern "system" {
+                    fn setsockopt(s: usize, level: i32, optname: i32, optval: *const i32, optlen: i32) -> i32;
+                }
+                setsockopt(raw, SOL_SOCKET, SO_RCVBUF, &buf_size, 4);
+                setsockopt(raw, SOL_SOCKET, SO_SNDBUF, &buf_size, 4);
+            }
+        }
+
         Ok(Self { socket: Arc::new(socket) })
     }
 
@@ -275,10 +294,16 @@ fn debug_log(msg: impl AsRef<str>) {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis();
+    let log_path = std::env::var("APPDATA")
+        .map(|p| format!(r"{}\lanremotecontrol\lrc_client_debug.log", p))
+        .unwrap_or_else(|_| "lrc_client_debug.log".to_string());
+    if let Some(parent) = std::path::Path::new(&log_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open("lrc_client_debug.log")
+        .open(&log_path)
     {
         let _ = writeln!(f, "[{}] {}", now_ms, msg.as_ref());
     }
@@ -288,48 +313,117 @@ fn debug_log(msg: impl AsRef<str>) {
 /// Background loop that receives fragmented screen frames, reassembles them
 /// and stores the decompressed BGRA frame in `frame_buffer`.
 ///
+/// Handles both full frames (`ScreenFrameChunk`) and delta frames
+/// (`ScreenFrameChunkDelta`).  Delta frames are decompressed into a list of
+/// `DeltaRegion`s and applied onto a persistent BGRA buffer.
+///
 /// Runs until the socket read returns a permanent error.
 pub fn run_frame_receiver(client: Arc<UdpClient>, frame_buffer: FrameBuffer) {
-    let mut assemblies: HashMap<u32, FrameAssemblyState> = HashMap::new();
+    let mut assemblies: HashMap<u32, (FrameAssemblyState, MessageType)> = HashMap::new();
     let mut stale_cleanup = Instant::now();
+
+    // Persistent BGRA buffer for delta frame composition.
+    // Initialised on the first full frame.
+    let mut persistent_bgra: Option<(Vec<u8>, u32, u32)> = None;
 
     loop {
         match client.receive(100) {
             Ok(msg) => {
                 match msg.message_type {
-                    MessageType::ScreenFrameChunk => {
+                    MessageType::ScreenFrameChunk | MessageType::ScreenFrameChunkDelta => {
+                        let is_delta = msg.message_type == MessageType::ScreenFrameChunkDelta;
                         if let Ok(chunk) = bincode::deserialize::<ScreenFrameChunk>(&msg.payload) {
                             // Log first chunk of each frame to track progress
                             if chunk.chunk_idx == 0 {
                                 debug_log(format!(
-                                    "Frame chunk start: msg_id={}, chunks={}, size={}",
+                                    "Frame chunk start: msg_id={}, chunks={}, size={}, type={}",
                                     chunk.msg_id, chunk.chunk_count, chunk.total_data_len,
+                                    if is_delta { "delta" } else { "full" },
                                 ));
                             }
                             if let Some((full_data, w, h)) =
-                                feed_frame_chunk(&mut assemblies, chunk)
+                                feed_frame_chunk_typed(&mut assemblies, chunk, msg.message_type)
                             {
                                 debug_log(format!(
-                                    "Frame assembled: {}x{} ({} bytes), decoding…",
-                                    w, h, full_data.len()
+                                    "Frame assembled: {}x{} ({} bytes), type={}, decoding…",
+                                    w, h, full_data.len(),
+                                    if is_delta { "delta" } else { "full" },
                                 ));
-                                // All chunks received — LZ4 decompress the frame
-                                let expected_size = (w * h * 4) as usize;
-                                match encoding::decompress_full_frame(&full_data, expected_size) {
-                                    Ok(bgra) => {
-                                        debug_log(format!(
-                                            "LZ4 decompress OK: {}×{} -> {} bytes",
-                                            w, h, bgra.len()
-                                        ));
-                                        if let Ok(mut guard) = frame_buffer.lock() {
-                                            *guard = Some((bgra, w, h));
+
+                                if is_delta {
+                                    // Delta frame: decompress into regions and apply
+                                    match encoding::decompress_delta(&full_data) {
+                                        Ok(regions) => {
+                                            debug_log(format!(
+                                                "Delta decompress OK: {} regions",
+                                                regions.len()
+                                            ));
+                                            // Apply delta regions to persistent buffer
+                                            if let Some((ref mut bgra, bw, bh)) = persistent_bgra {
+                                                for region in &regions {
+                                                    // Apply each region's pixel data to the buffer
+                                                    let region_stride = region.width * 4;
+                                                    for y in 0..region.height {
+                                                        let dst_y = region.y + y;
+                                                        if dst_y >= bh {
+                                                            break;
+                                                        }
+                                                        let dst_x_start = region.x * 4;
+                                                        let src_start = (y * region_stride) as usize;
+                                                        let src_end = src_start + (region.width * 4) as usize;
+                                                        let dst_start = ((dst_y * bw * 4) + dst_x_start) as usize;
+                                                        let dst_end = dst_start + (region.width * 4) as usize;
+                                                        // Clamp to buffer bounds
+                                                        let copy_len = src_end - src_start;
+                                                        let dst_clamped_end = dst_start + copy_len;
+                                                        if dst_clamped_end <= bgra.len() && src_end <= region.lz4_compressed_data.len() {
+                                                            bgra[dst_start..dst_clamped_end]
+                                                                .copy_from_slice(
+                                                                    &region.lz4_compressed_data[src_start..src_end],
+                                                                );
+                                                        }
+                                                    }
+                                                }
+                                                // Push updated buffer to frame_buffer
+                                                debug_log(format!(
+                                                    "Delta applied: {} regions -> {}x{} buffer",
+                                                    regions.len(), bw, bh
+                                                ));
+                                                if let Ok(mut guard) = frame_buffer.lock() {
+                                                    *guard = Some((bgra.clone(), bw, bh));
+                                                }
+                                            } else {
+                                                debug_log("Delta frame received but no persistent buffer — skipping".to_string());
+                                            }
+                                        }
+                                        Err(e) => {
+                                            debug_log(format!(
+                                                "Delta decompress FAILED: {} (data={} bytes)",
+                                                e, full_data.len()
+                                            ));
                                         }
                                     }
-                                    Err(e) => {
-                                        debug_log(format!(
-                                            "LZ4 decompress FAILED: {} (data={} bytes, {}x{})",
-                                            e, full_data.len(), w, h
-                                        ));
+                                } else {
+                                    // Full frame: LZ4 decompress directly
+                                    let expected_size = (w * h * 4) as usize;
+                                    match encoding::decompress_full_frame(&full_data, expected_size) {
+                                        Ok(bgra) => {
+                                            debug_log(format!(
+                                                "LZ4 full-frame decompress OK: {}×{} -> {} bytes",
+                                                w, h, bgra.len()
+                                            ));
+                                            // Update persistent buffer for future delta frames
+                                            persistent_bgra = Some((bgra.clone(), w, h));
+                                            if let Ok(mut guard) = frame_buffer.lock() {
+                                                *guard = Some((bgra, w, h));
+                                            }
+                                        }
+                                        Err(e) => {
+                                            debug_log(format!(
+                                                "LZ4 full-frame decompress FAILED: {} (data={} bytes, {}x{})",
+                                                e, full_data.len(), w, h
+                                            ));
+                                        }
                                     }
                                 }
                             }
@@ -357,17 +451,48 @@ pub fn run_frame_receiver(client: Arc<UdpClient>, frame_buffer: FrameBuffer) {
             }
         }
 
-        // Periodically clean stale partial assemblies (older than 5 seconds)
-        if stale_cleanup.elapsed() > Duration::from_secs(5) {
-            assemblies.retain(|_, state| {
-                // Keep only entries where we have received at least 1 chunk
-                // In a full implementation we'd track a timestamp per state.
-                // For P0 just keep everything that has progress.
+        // Periodically clean stale partial assemblies (incomplete frames stuck in map)
+        if stale_cleanup.elapsed() > Duration::from_secs(2) {
+            let before = assemblies.len();
+            assemblies.retain(|_, (state, _)| {
+                // Keep only assemblies that are still in-progress
                 state.received_count > 0 && state.received_count < state.chunk_count
             });
+            let removed = before - assemblies.len();
+            if removed > 0 {
+                debug_log(format!("Stale cleanup: removed {} incomplete assemblies", removed));
+            }
             stale_cleanup = Instant::now();
         }
     }
+}
+
+/// Feed a received chunk into the assembly map, tracking message type.
+///
+/// Returns `Some((complete_data, width, height))` when the last chunk arrives,
+/// at which point the assembly state is removed from the map.
+pub fn feed_frame_chunk_typed(
+    assemblies: &mut std::collections::HashMap<u32, (FrameAssemblyState, MessageType)>,
+    chunk: ScreenFrameChunk,
+    msg_type: MessageType,
+) -> Option<(Vec<u8>, u32, u32)> {
+    let entry = assemblies.entry(chunk.msg_id).or_insert_with(|| {
+        (
+            FrameAssemblyState::new(
+                chunk.chunk_count,
+                chunk.total_data_len,
+                chunk.width,
+                chunk.height,
+            ),
+            msg_type,
+        )
+    });
+
+    let result = entry.0.add_chunk(chunk.chunk_idx as usize, chunk.data);
+    if result.is_some() {
+        assemblies.remove(&chunk.msg_id);
+    }
+    result
 }
 
 /// 将像素坐标归一化为 Windows 绝对坐标 (0..65535)

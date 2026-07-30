@@ -54,8 +54,10 @@ pub enum MessageType {
     Heartbeat = 0x04,
     /// Connection management (initiation, capabilities exchange, teardown).
     ConnectionManagement = 0x05,
-    /// Chunk of a fragmented screen frame (large frames spanning multiple packets).
+    /// Chunk of a fragmented full screen frame (LZ4 full-frame compressed).
     ScreenFrameChunk = 0x06,
+    /// Chunk of a fragmented delta screen frame (LZ4 tile-delta compressed).
+    ScreenFrameChunkDelta = 0x07,
 }
 
 impl MessageType {
@@ -68,6 +70,7 @@ impl MessageType {
             0x04 => Some(Self::Heartbeat),
             0x05 => Some(Self::ConnectionManagement),
             0x06 => Some(Self::ScreenFrameChunk),
+            0x07 => Some(Self::ScreenFrameChunkDelta),
             _ => None,
         }
     }
@@ -518,6 +521,7 @@ mod tests {
         assert_eq!(MessageType::from_u8(0x04), Some(MessageType::Heartbeat));
         assert_eq!(MessageType::from_u8(0x05), Some(MessageType::ConnectionManagement));
         assert_eq!(MessageType::from_u8(0x06), Some(MessageType::ScreenFrameChunk));
+        assert_eq!(MessageType::from_u8(0x07), Some(MessageType::ScreenFrameChunkDelta));
         assert_eq!(MessageType::from_u8(0xFF), None);
     }
 

@@ -31,7 +31,7 @@ pub struct DeltaRegion {
 }
 
 /// Default tile size used for delta detection (in pixels per side).
-pub const DEFAULT_TILE_SIZE: u32 = 64;
+pub const DEFAULT_TILE_SIZE: u32 = 128;
 
 /// Threshold: if more than this fraction of tiles changed, prefer a full frame.
 pub const FULL_FRAME_THRESHOLD: f64 = 0.3;
@@ -152,6 +152,37 @@ pub fn should_send_full_frame(changed_tiles: usize, total_tiles: usize) -> bool 
         return false;
     }
     (changed_tiles as f64) / (total_tiles as f64) > FULL_FRAME_THRESHOLD
+}
+
+/// Convenience alias for `tile_checksums`.
+pub fn compute_tile_checksums(
+    frame: &[u8],
+    width: u32,
+    height: u32,
+    tile_size: u32,
+) -> HashMap<(u32, u32), u32> {
+    tile_checksums(frame, width, height, tile_size)
+}
+
+/// Total number of tiles for a given frame dimension and tile size.
+pub fn total_tile_count(width: u32, height: u32, tile_size: u32) -> usize {
+    let cols = (width + tile_size - 1) / tile_size;
+    let rows = (height + tile_size - 1) / tile_size;
+    (cols * rows) as usize
+}
+
+/// Compress delta regions from a frame and a list of changed tile coordinates.
+/// This is a convenience function that combines `build_delta_regions` + `compress_delta`.
+pub fn compress_delta_tiles(
+    frame: &[u8],
+    width: u32,
+    height: u32,
+    tile_size: u32,
+    changed_tiles: &[(u32, u32)],
+) -> Result<Vec<u8>, EncodingError> {
+    let stride = width * 4;
+    let regions = build_delta_regions(frame, width, height, stride, changed_tiles, tile_size);
+    compress_delta(&regions)
 }
 
 // ── Tile Data Extraction ───────────────────────────────────────────────────

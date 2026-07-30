@@ -25,7 +25,27 @@ impl UdpListener {
     /// to stderr and the socket continues without it.
     pub fn bind(port: u16) -> io::Result<Self> {
         let socket = UdpSocket::bind(format!("0.0.0.0:{}", port))?;
-        socket.set_read_timeout(Some(Duration::from_millis(100)))?;
+        socket.set_read_timeout(Some(Duration::from_millis(1)))?;
+
+        // Increase UDP receive buffer to handle burst of frame chunks
+        // Default Windows UDP buffer is 8KB — far too small for 400+ chunks
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+            const SOL_SOCKET: i32 = 0xFFFF;
+            const SO_RCVBUF: i32 = 0x1002;
+            const SO_SNDBUF: i32 = 0x1001;
+            let buf_size: i32 = 4 * 1024 * 1024; // 4MB
+            unsafe {
+                let raw = socket.as_raw_socket() as usize;
+                #[link(name = "ws2_32")]
+                extern "system" {
+                    fn setsockopt(s: usize, level: i32, optname: i32, optval: *const i32, optlen: i32) -> i32;
+                }
+                setsockopt(raw, SOL_SOCKET, SO_RCVBUF, &buf_size, 4);
+                setsockopt(raw, SOL_SOCKET, SO_SNDBUF, &buf_size, 4);
+            }
+        }
 
         // Enable SO_REUSEADDR for quick restarts (Unix-only; best-effort)
         #[cfg(unix)]
@@ -70,14 +90,14 @@ impl UdpListener {
     /// Send a large payload as fragmented `ScreenFrameChunk` messages.
     ///
     /// The payload is split into `SCREEN_FRAME_CHUNK_DATA_SIZE`-sized chunks,
-    /// each wrapped in a `ScreenFrameChunk` message and sent as separate
-    /// UDP datagrams.  Each chunk is sent **2 times** to guard against the
-    /// occasional packet loss typical on consumer LANs.
+    /// each wrapped in a `ScreenFrameChunk` message and sent as a separate
+    /// UDP datagram.  Chunks are sent exactly once — on a healthy LAN, packet
+    /// loss is negligible and the bandwidth savings (≈50%) reduce burst
+    /// congestion, which is the primary cause of packet drops at high frame
+    /// rates.
     ///
-    /// The receiver's [`FrameAssemblyState::add_chunk`] ignores duplicates,
-    /// so re-transmission is idempotent — double-sending is a good trade-off
-    /// between reliability and bandwidth: at 0.01% random loss and ~4000
-    /// chunks, >99.99% of frames complete (vs ~67% with single send).
+    /// `chunk_type` should be `ScreenFrameChunk` for full frames or
+    /// `ScreenFrameChunkDelta` for delta frames.
     pub fn send_fragmented(
         &self,
         msg_id: u32,
@@ -86,29 +106,21 @@ impl UdpListener {
         dest: SocketAddr,
         width: u32,
         height: u32,
+        chunk_type: MessageType,
     ) -> io::Result<()> {
         let chunks = split_into_chunks(payload, msg_id, width, height);
-        // Pre-serialise all chunk messages once (avoids redundant work in
-        // each send pass).
-        let chunk_wires: Vec<Vec<u8>> = chunks
-            .iter()
-            .map(|chunk| {
-                let chunk_bytes = bincode::serialize(chunk)
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                Message::new(MessageType::ScreenFrameChunk, seq, chunk_bytes)
-                    .to_bytes()
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-            })
-            .collect::<io::Result<Vec<Vec<u8>>>>()?;
-        // Two passes — each pre-serialised wire is sent 2×.  The receiver
-        // ignores duplicates, so this is completely idempotent.
-        for pass in 0..2 {
-            for wire in &chunk_wires {
-                self.socket.send_to(wire, dest)?;
-            }
-            if pass == 0 {
-                // Brief micro-yield between passes to let the kernel drain
-                // the send buffer, reducing burst drops on saturated links.
+        // Pre-serialise all chunk messages once.
+        for (i, chunk) in chunks.iter().enumerate() {
+            let chunk_bytes = bincode::serialize(chunk)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let msg = Message::new(chunk_type, seq, chunk_bytes);
+            let wire = msg
+                .to_bytes()
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            self.socket.send_to(&wire, dest)?;
+            // Yield every 64 chunks to avoid saturating the NIC/OS buffer
+            // on large full frames (400+ chunks)
+            if i > 0 && i % 64 == 0 {
                 std::thread::yield_now();
             }
         }

@@ -111,7 +111,7 @@ mod platform {
 
             unsafe {
                 self.duplication
-                    .AcquireNextFrame(16, &mut frame_info, &mut resource)
+                    .AcquireNextFrame(5, &mut frame_info, &mut resource)
                     .map_err(|e| {
                         if e.code() == DXGI_ERROR_WAIT_TIMEOUT {
                             CaptureError::FrameAcquireFailed("timeout".into())
