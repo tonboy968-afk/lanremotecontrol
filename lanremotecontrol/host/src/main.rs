@@ -3,6 +3,7 @@
 //! Runs on the machine being controlled. Listens for incoming UDP connections,
 //! manages the connection handshake, and maintains heartbeats.
 
+mod capture;
 mod net;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,7 +17,11 @@ use net::{ConnectionManager, HeartbeatManager, UdpListener};
 fn main() {
     println!("LANRemoteControl Host Service");
     println!("=============================");
-    println!("Press Ctrl+C to stop.\n");
+
+    // ── Screen capture module demonstration ──────────────────────────────
+    demo_screen_capture();
+
+    println!("\nPress Ctrl+C to stop.\n");
 
     // ── Bind UDP listener ────────────────────────────────────────────────
     let listener = match UdpListener::bind(DEFAULT_PORT) {
@@ -48,7 +53,7 @@ fn main() {
     })
     .expect("Error setting Ctrl+C handler");
 
-    println!("[i] Waiting for connections ...");
+    println!("[i] Waiting for connections ...\n");
 
     // ── Main event loop ──────────────────────────────────────────────────
     while running.load(Ordering::SeqCst) {
@@ -137,4 +142,73 @@ fn main() {
     }
 
     println!("\n[i] Host service shut down gracefully.");
+}
+
+// ── Screen capture demonstration ──────────────────────────────────────────
+
+/// Initialises the screen capture module (if available) and prints diagnostic
+/// information about the first captured frame.
+fn demo_screen_capture() {
+    use capture::DxgiCapture;
+    use lanremotecontrol_common::encoding;
+
+    println!("\n[📷] Screen Capture Module Demo");
+    println!("--------------------------------");
+
+    match DxgiCapture::new() {
+        Ok(mut cap) => {
+            println!("[✓] DXGI capture initialised");
+            println!("[i] {}", cap.display_info());
+
+            // Capture one frame
+            match cap.capture_frame() {
+                Ok(frame) => {
+                    print!("[i] Captured: {}x{} px", frame.width, frame.height);
+                    println!(
+                        " ({} MB raw)",
+                        frame.data.len() as f64 / 1_048_576.0
+                    );
+
+                    // Compute tile checksums
+                    let tile_size = encoding::DEFAULT_TILE_SIZE;
+                    let checksums =
+                        encoding::tile_checksums(&frame.data, frame.width, frame.height, tile_size);
+                    println!(
+                        "[i] Tiles: {} ({}x{})",
+                        checksums.len(),
+                        (frame.width + tile_size - 1) / tile_size,
+                        (frame.height + tile_size - 1) / tile_size,
+                    );
+
+                    // Compress a full frame for testing
+                    match encoding::compress_full_frame(&frame.data) {
+                        Ok(compressed) => {
+                            let ratio = compressed.len() as f64 / frame.data.len() as f64 * 100.0;
+                            println!(
+                                "[i] Full frame LZ4: {} bytes (ratio: {:.1}%)",
+                                compressed.len(),
+                                ratio
+                            );
+                        }
+                        Err(e) => eprintln!("[!] Full frame compression failed: {}", e),
+                    }
+
+                    println!("[✓] Screen capture module verified OK");
+                }
+                Err(e) => {
+                    eprintln!("[!] capture_frame() failed: {}", e);
+                    eprintln!("[i] Screen capture will not be available in this session.");
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("[i] DXGI capture unavailable: {}", e);
+            #[cfg(not(windows))]
+            eprintln!("[i] DXGI is a Windows-only API (current platform is not Windows)");
+            #[cfg(windows)]
+            eprintln!("[i] On Windows, this may indicate no compatible GPU or DXGI support.");
+        }
+    }
+
+    println!("--------------------------------\n");
 }

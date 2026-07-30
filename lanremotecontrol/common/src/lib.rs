@@ -5,6 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
+// Public sub-modules for screen capture abstractions and encoding.
+pub mod capture;
+pub mod encoding;
+
 // ============================================================================
 // Protocol Constants
 // ============================================================================

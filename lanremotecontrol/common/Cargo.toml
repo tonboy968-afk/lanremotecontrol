@@ -7,3 +7,5 @@ description = "Shared message types, constants, and protocol helpers for LANRemo
 [dependencies]
 serde.workspace = true
 bincode.workspace = true
+lz4.workspace = true
+xxhash-rust.workspace = true

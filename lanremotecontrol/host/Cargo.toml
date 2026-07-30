@@ -9,3 +9,5 @@ lanremotecontrol-common = { path = "../common" }
 serde.workspace = true
 bincode.workspace = true
 ctrlc = "3.4"
+windows.workspace = true
+windows-core.workspace = true
