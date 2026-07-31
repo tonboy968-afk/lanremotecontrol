@@ -310,6 +310,20 @@ fn debug_log(msg: impl AsRef<str>) {
     eprintln!("[LRC] {}", msg.as_ref());
 }
 
+/// Request an immediate full keyframe from the host (decoder refresh / DCC).
+///
+/// Rate-limited to once per 500ms to avoid flooding the host when many
+/// frames are lost in a burst (e.g. fast motion over lossy Wi-Fi).
+fn request_keyframe(client: &UdpClient, last_req: &mut Instant) {
+    if last_req.elapsed() > Duration::from_millis(500) {
+        let msg = Message::new(MessageType::RequestKeyframe, 0, Vec::new());
+        if client.send(&msg).is_ok() {
+            *last_req = Instant::now();
+            debug_log("Requested keyframe (decoder refresh) from host");
+        }
+    }
+}
+
 /// Background loop that receives fragmented screen frames, reassembles them
 /// and stores the decompressed BGRA frame in `frame_buffer`.
 ///
@@ -326,6 +340,12 @@ pub fn run_frame_receiver(client: Arc<UdpClient>, frame_buffer: FrameBuffer) {
     // Initialised on the first full frame.
     let mut persistent_bgra: Option<(Vec<u8>, u32, u32)> = None;
 
+    // Last successfully-applied frame id. Used to detect dropped frames
+    // (a gap in msg_id sequence means a frame was lost on the wire).
+    let mut last_applied_msg_id: u32 = 0;
+    // Rate-limit timestamp for keyframe requests.
+    let mut last_kf_req = Instant::now() - Duration::from_secs(10);
+
     loop {
         match client.receive(100) {
             Ok(msg) => {
@@ -333,8 +353,15 @@ pub fn run_frame_receiver(client: Arc<UdpClient>, frame_buffer: FrameBuffer) {
                     MessageType::ScreenFrameChunk | MessageType::ScreenFrameChunkDelta => {
                         let is_delta = msg.message_type == MessageType::ScreenFrameChunkDelta;
                         if let Ok(chunk) = bincode::deserialize::<ScreenFrameChunk>(&msg.payload) {
+                            let msg_id = chunk.msg_id;
                             // Log first chunk of each frame to track progress
                             if chunk.chunk_idx == 0 {
+                                // Gap detection: if this frame is more than 1 ahead of the
+                                // last applied frame, a frame was dropped on the wire →
+                                // request a keyframe so the decoder can re-sync.
+                                if last_applied_msg_id != 0 && msg_id > last_applied_msg_id + 1 {
+                                    request_keyframe(&client, &mut last_kf_req);
+                                }
                                 debug_log(format!(
                                     "Frame chunk start: msg_id={}, chunks={}, size={}, type={}",
                                     chunk.msg_id, chunk.chunk_count, chunk.total_data_len,
@@ -392,6 +419,7 @@ pub fn run_frame_receiver(client: Arc<UdpClient>, frame_buffer: FrameBuffer) {
                                                 if let Ok(mut guard) = frame_buffer.lock() {
                                                     *guard = Some((bgra.clone(), bw, bh));
                                                 }
+                                                last_applied_msg_id = msg_id;
                                             } else {
                                                 debug_log("Delta frame received but no persistent buffer — skipping".to_string());
                                             }
@@ -401,6 +429,8 @@ pub fn run_frame_receiver(client: Arc<UdpClient>, frame_buffer: FrameBuffer) {
                                                 "Delta decompress FAILED: {} (data={} bytes)",
                                                 e, full_data.len()
                                             ));
+                                            // Lost/corrupt delta frame → ask for a keyframe
+                                            request_keyframe(&client, &mut last_kf_req);
                                         }
                                     }
                                 } else {
@@ -417,12 +447,16 @@ pub fn run_frame_receiver(client: Arc<UdpClient>, frame_buffer: FrameBuffer) {
                                             if let Ok(mut guard) = frame_buffer.lock() {
                                                 *guard = Some((bgra, w, h));
                                             }
+                                            last_applied_msg_id = msg_id;
                                         }
                                         Err(e) => {
                                             debug_log(format!(
                                                 "LZ4 full-frame decompress FAILED: {} (data={} bytes, {}x{})",
                                                 e, full_data.len(), w, h
                                             ));
+                                            // Keyframe itself was lost/corrupt → re-request so
+                                            // the decoder can still re-sync.
+                                            request_keyframe(&client, &mut last_kf_req);
                                         }
                                     }
                                 }
@@ -461,6 +495,9 @@ pub fn run_frame_receiver(client: Arc<UdpClient>, frame_buffer: FrameBuffer) {
             let removed = before - assemblies.len();
             if removed > 0 {
                 debug_log(format!("Stale cleanup: removed {} incomplete assemblies", removed));
+                // Incomplete frames stuck in the map = dropped chunks on the wire.
+                // Request a keyframe to re-sync the decoder.
+                request_keyframe(&client, &mut last_kf_req);
             }
             stale_cleanup = Instant::now();
         }

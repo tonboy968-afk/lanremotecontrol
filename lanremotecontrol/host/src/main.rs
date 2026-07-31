@@ -52,6 +52,7 @@ fn main() {
 
     // Tile-delta state
     let mut prev_checksums: Option<std::collections::HashMap<(u32, u32), u32>> = None;
+    let mut force_full_next = false;
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -123,6 +124,10 @@ fn main() {
                             }
                         }
                     }
+                    MessageType::RequestKeyframe => {
+                        force_full_next = true;
+                        println!("[i] Keyframe request from {} (decoder refresh)", addr);
+                    }
                     _ => {
                         println!("[i] Received {:?} from {}", msg.message_type, addr);
                     }
@@ -183,8 +188,12 @@ fn main() {
                             &send_data, send_w, send_h, tile_size,
                         );
 
-                        // Force full frame every 30 frames for keyframe recovery
-                        let force_full = frame_seq > 0 && frame_seq % 30 == 0;
+                        // Force full frame every 15 frames for keyframe recovery
+                        // (or immediately when client requests a decoder refresh)
+                        let force_full = force_full_next || (frame_seq > 0 && frame_seq % 15 == 0);
+                        if force_full_next {
+                            force_full_next = false;
+                        }
 
                         let (compressed_data, frame_type, changed_count, total_tiles) =
                             if force_full || prev_checksums.is_none() {

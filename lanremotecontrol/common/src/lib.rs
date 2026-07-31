@@ -58,6 +58,8 @@ pub enum MessageType {
     ScreenFrameChunk = 0x06,
     /// Chunk of a fragmented delta screen frame (LZ4 tile-delta compressed).
     ScreenFrameChunkDelta = 0x07,
+    /// Client-to-host request for an immediate full keyframe (decoder refresh).
+    RequestKeyframe = 0x08,
 }
 
 impl MessageType {
@@ -71,6 +73,7 @@ impl MessageType {
             0x05 => Some(Self::ConnectionManagement),
             0x06 => Some(Self::ScreenFrameChunk),
             0x07 => Some(Self::ScreenFrameChunkDelta),
+            0x08 => Some(Self::RequestKeyframe),
             _ => None,
         }
     }
