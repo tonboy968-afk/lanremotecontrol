@@ -1,12 +1,25 @@
-//! LANRemoteControl Host Service
+//! LANRemoteControl Host Service (threaded: capture / send / receive decoupled)
+//!
+//! Architecture:
+//!   - Capture thread: DXGI capture + LZ4 tile-delta encode → pushes `FrameToSend`
+//!     into a bounded channel. Never touches the network, so it is never blocked
+//!     by UDP send backlog (the root cause of the old single-thread stutter).
+//!   - Send thread: drains the channel, chunks each frame and transmits via UDP.
+//!     The 10055 backpressure (sleep-retry) lives here and only stalls THIS thread,
+//!     not capture.
+//!   - Main thread: receive loop + heartbeats + connection management + input
+//!     injection. Fully independent of capture/send timing.
 
 mod capture;
 mod input;
 mod net;
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use lanremotecontrol_common::*;
 use lanremotecontrol_common::capture::CaptureError;
@@ -14,10 +27,188 @@ use lanremotecontrol_common::encoding;
 
 use net::{ConnectionManager, HeartbeatManager, UdpListener};
 
+/// A fully-encoded frame handed from the capture thread to the send thread.
+/// The send thread only chunks + transmits; it performs no encode work.
+struct FrameToSend {
+    msg_id: u32,
+    seq: u32,
+    width: u32,
+    height: u32,
+    chunk_type: MessageType,
+    payload: Vec<u8>,
+}
+
+/// Max frames buffered between capture and send. Bounds memory if the send
+/// thread ever falls behind the capture rate, and provides gentle backpressure.
+const FRAME_CHANNEL_CAP: usize = 4;
+
+/// Capture target interval (≈60fps cap). Capture is throttled to this so the
+/// host doesn't spin at unbounded fps.
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+
+/// Keyframe (full frame) cadence in frames.
+const KEYFRAME_INTERVAL: u32 = 15;
+
 fn main() {
-    println!("LANRemoteControl Host Service");
+    println!("LANRemoteControl Host Service (threaded)");
     println!("=============================");
 
+    let listener = match UdpListener::bind(DEFAULT_PORT) {
+        Ok(l) => {
+            let addr = l.local_addr().expect("local_addr");
+            println!("[OK] Listening on udp://{}", addr);
+            Arc::new(l)
+        }
+        Err(e) => {
+            eprintln!("[X] Failed to bind to port {}: {}", DEFAULT_PORT, e);
+            std::process::exit(1);
+        }
+    };
+
+    let conn_mgr: Arc<Mutex<ConnectionManager>> =
+        Arc::new(Mutex::new(ConnectionManager::new()));
+    let force_full_next = Arc::new(AtomicBool::new(false));
+    let running = Arc::new(AtomicBool::new(true));
+
+    let ctrlc_running = Arc::clone(&running);
+    ctrlc::set_handler(move || {
+        println!("\n[!] Shutdown signal received (Ctrl+C)");
+        ctrlc_running.store(false, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl+C handler");
+
+    let (tx, rx) = sync_channel::<FrameToSend>(FRAME_CHANNEL_CAP);
+
+    // --- Capture thread: capture + tile-delta encode, push to channel ---
+    let capture_handle = {
+        let conn_mgr = Arc::clone(&conn_mgr);
+        let force_full_next = Arc::clone(&force_full_next);
+        let running = Arc::clone(&running);
+        thread::spawn(move || {
+            capture_loop(conn_mgr, force_full_next, running, tx);
+        })
+    };
+
+    // --- Send thread: drain channel, chunk + transmit over UDP ---
+    let send_handle = {
+        let listener = Arc::clone(&listener);
+        let conn_mgr = Arc::clone(&conn_mgr);
+        let running = Arc::clone(&running);
+        thread::spawn(move || {
+            send_loop(listener, conn_mgr, running, rx);
+        })
+    };
+
+    println!("[i] Capture + send threads started. Waiting for connections ...\n");
+
+    // --- Main thread: receive loop + heartbeats (never blocks on capture/send) ---
+    let mut hb = HeartbeatManager::new(Duration::from_millis(HEARTBEAT_INTERVAL_MS));
+
+    while running.load(Ordering::SeqCst) {
+        match listener.receive_message() {
+            Ok((msg, addr)) => match msg.message_type {
+                MessageType::ConnectionManagement => {
+                    let reply = {
+                        let mut mgr = conn_mgr.lock().unwrap();
+                        mgr.handle_message(msg, addr).ok().and_then(|r| r)
+                    };
+                    if let Some(reply) = reply {
+                        if let Err(e) = listener.send_message(&reply, addr) {
+                            eprintln!("[!] Failed to send reply to {}: {}", addr, e);
+                        } else {
+                            println!("[->] Sent capabilities response to {}", addr);
+                        }
+                    } else {
+                        println!(
+                            "[i] Connection management message from {} (active: {})",
+                            addr,
+                            conn_mgr.lock().unwrap().active_count()
+                        );
+                    }
+                }
+                MessageType::Heartbeat => {
+                    let ack = create_ack(msg.sequence_number);
+                    if let Err(e) = listener.send_message(&ack, addr) {
+                        eprintln!("[!] Failed to send ACK to {}: {}", addr, e);
+                    }
+                }
+                MessageType::Ack => {
+                    let seq_bytes = &msg.payload;
+                    if seq_bytes.len() >= 4 {
+                        let seq = u32::from_le_bytes([
+                            seq_bytes[0],
+                            seq_bytes[1],
+                            seq_bytes[2],
+                            seq_bytes[3],
+                        ]);
+                        hb.received_ack(seq);
+                    }
+                }
+                MessageType::ControlCommand => {
+                    match bincode::deserialize::<ControlCommandPayload>(&msg.payload) {
+                        Ok(cmd) => {
+                            if let Err(e) = input::InputInjector::inject(&cmd) {
+                                eprintln!("[!] Input injection failed from {}: {}", addr, e);
+                            }
+                            let ack = create_ack(msg.sequence_number);
+                            if let Err(e) = listener.send_message(&ack, addr) {
+                                eprintln!("[!] Failed to send ACK to {}: {}", addr, e);
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("[!] Invalid ControlCommand payload from {}: {}", addr, e)
+                        }
+                    }
+                }
+                MessageType::RequestKeyframe => {
+                    force_full_next.store(true, Ordering::SeqCst);
+                    println!("[i] Keyframe request from {} (decoder refresh)", addr);
+                }
+                _ => println!("[i] Received {:?} from {}", msg.message_type, addr),
+            },
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) => eprintln!("[!] Receive error: {}", e),
+        }
+
+        if hb.tick() {
+            let seq = hb.current_seq();
+            let addrs = conn_mgr.lock().unwrap().active_addrs();
+            if !addrs.is_empty() {
+                let hb_msg = create_heartbeat(seq);
+                for &addr in &addrs {
+                    if let Err(e) = listener.send_message(&hb_msg, addr) {
+                        eprintln!("[!] Failed to send heartbeat to {}: {}", addr, e);
+                    }
+                }
+                println!(
+                    "[H] Heartbeat seq={} (active connections: {})",
+                    seq,
+                    addrs.len()
+                );
+            }
+            if !hb.check_alive() {
+                eprintln!("[!] Warning: {} heartbeats missed for a connection", seq);
+            }
+        }
+    }
+
+    println!("\n[i] Shutting down host service ...");
+    capture_handle.join().ok();
+    send_handle.join().ok();
+    println!("[i] Host service shut down gracefully.");
+}
+
+/// Capture + encode loop. Runs on its own thread; never performs network I/O,
+/// so it is immune to UDP send backlog (the old single-thread stutter root
+/// cause). Encoded frames are handed to the send thread via the bounded channel.
+fn capture_loop(
+    conn_mgr: Arc<Mutex<ConnectionManager>>,
+    force_full_next: Arc<AtomicBool>,
+    running: Arc<AtomicBool>,
+    tx: SyncSender<FrameToSend>,
+) {
     let mut capture = match capture::DxgiCapture::new() {
         Ok(cap) => {
             println!("[OK] DXGI capture initialised");
@@ -30,328 +221,193 @@ fn main() {
         }
     };
 
-    println!("\nPress Ctrl+C to stop.\n");
-
-    let listener = match UdpListener::bind(DEFAULT_PORT) {
-        Ok(l) => {
-            let addr = l.local_addr().expect("local_addr");
-            println!("[OK] Listening on udp://{}", addr);
-            l
-        }
-        Err(e) => {
-            eprintln!("[X] Failed to bind to port {}: {}", DEFAULT_PORT, e);
-            std::process::exit(1);
-        }
-    };
-
-    let mut conn_mgr = ConnectionManager::new();
-    let mut hb = HeartbeatManager::new(Duration::from_millis(HEARTBEAT_INTERVAL_MS));
+    let tile_size = encoding::DEFAULT_TILE_SIZE;
+    let mut prev_checksums: Option<HashMap<(u32, u32), u32>> = None;
     let mut frame_seq: u32 = 0;
-    let mut last_frame_time = std::time::Instant::now();
-    const FRAME_INTERVAL: Duration = Duration::from_millis(16); // 60fps cap
-
-    // Tile-delta state
-    let mut prev_checksums: Option<std::collections::HashMap<(u32, u32), u32>> = None;
-    let mut force_full_next = false;
-
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-
-    ctrlc::set_handler(move || {
-        println!("\n[!] Shutdown signal received (Ctrl+C)");
-        r.store(false, Ordering::SeqCst);
-    })
-    .expect("Error setting Ctrl+C handler");
-
-    println!("[i] Waiting for connections ...\n");
+    let mut last_frame_time = Instant::now();
 
     while running.load(Ordering::SeqCst) {
-        match listener.receive_message() {
-            Ok((msg, addr)) => {
-                match msg.message_type {
-                    MessageType::ConnectionManagement => {
-                        match conn_mgr.handle_message(msg, addr) {
-                            Ok(Some(reply)) => {
-                                if let Err(e) = listener.send_message(&reply, addr) {
-                                    eprintln!("[!] Failed to send reply to {}: {}", addr, e);
-                                } else {
-                                    println!("[->] Sent capabilities response to {}", addr);
-                                }
-                            }
-                            Ok(None) => {
-                                println!(
-                                    "[i] Connection management message from {} (active: {})",
-                                    addr,
-                                    conn_mgr.active_count()
-                                );
-                            }
-                            Err(e) => {
-                                eprintln!("[!] Error handling connection mgmt msg: {}", e);
-                            }
-                        }
-                    }
-                    MessageType::Heartbeat => {
-                        let ack = create_ack(msg.sequence_number);
-                        if let Err(e) = listener.send_message(&ack, addr) {
-                            eprintln!("[!] Failed to send ACK to {}: {}", addr, e);
-                        }
-                    }
-                    MessageType::Ack => {
-                        let seq_bytes = &msg.payload;
-                        if seq_bytes.len() >= 4 {
-                            let seq = u32::from_le_bytes([
-                                seq_bytes[0],
-                                seq_bytes[1],
-                                seq_bytes[2],
-                                seq_bytes[3],
-                            ]);
-                            hb.received_ack(seq);
-                        }
-                    }
-                    MessageType::ControlCommand => {
-                        match bincode::deserialize::<ControlCommandPayload>(&msg.payload) {
-                            Ok(cmd) => {
-                                if let Err(e) = input::InputInjector::inject(&cmd) {
-                                    eprintln!("[!] Input injection failed from {}: {}", addr, e);
-                                }
-                                let ack = create_ack(msg.sequence_number);
-                                if let Err(e) = listener.send_message(&ack, addr) {
-                                    eprintln!("[!] Failed to send ACK to {}: {}", addr, e);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("[!] Invalid ControlCommand payload from {}: {}", addr, e);
-                            }
-                        }
-                    }
-                    MessageType::RequestKeyframe => {
-                        force_full_next = true;
-                        println!("[i] Keyframe request from {} (decoder refresh)", addr);
-                    }
-                    _ => {
-                        println!("[i] Received {:?} from {}", msg.message_type, addr);
-                    }
-                }
+        // Only capture when at least one client is connected.
+        if conn_mgr.lock().unwrap().active_count() == 0 {
+            thread::sleep(FRAME_INTERVAL);
+            continue;
+        }
+
+        // Throttle to FRAME_INTERVAL so the host doesn't spin at unbounded fps.
+        let elapsed = last_frame_time.elapsed();
+        if elapsed < FRAME_INTERVAL {
+            thread::sleep(FRAME_INTERVAL - elapsed);
+            continue;
+        }
+        last_frame_time = Instant::now();
+
+        let cap = match capture.as_mut() {
+            Some(c) => c,
+            None => {
+                thread::sleep(Duration::from_millis(100));
+                continue;
             }
-            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                // Normal timeout
+        };
+
+        let frame = match cap.capture_frame() {
+            Ok(f) => f,
+            Err(CaptureError::FrameAcquireFailed(_)) => continue,
+            Err(CaptureError::DeviceLost) => {
+                eprintln!("[!] DXGI device lost, reinitializing...");
+                capture = capture::DxgiCapture::new().ok();
+                prev_checksums = None;
+                continue;
             }
             Err(e) => {
-                eprintln!("[!] Receive error: {}", e);
+                eprintln!("[!] Capture error: {:?}", e);
+                continue;
             }
-        }
+        };
 
-        // Heartbeat tick
-        if hb.tick() {
-            let seq = hb.current_seq();
-            if conn_mgr.active_count() > 0 {
-                let hb_msg = create_heartbeat(seq);
-                for &addr in &conn_mgr.active_addrs() {
-                    if let Err(e) = listener.send_message(&hb_msg, addr) {
-                        eprintln!("[!] Failed to send heartbeat to {}: {}", addr, e);
-                    }
-                }
-                println!(
-                    "[H] Heartbeat seq={} (active connections: {})",
-                    seq,
-                    conn_mgr.active_count()
-                );
-            }
-            if !hb.check_alive() {
-                eprintln!("[!] Warning: {} heartbeats missed for a connection", seq);
-            }
-        }
+        let raw_size = frame.data.len();
+        let width = frame.width;
+        let height = frame.height;
 
-        // Screen capture and frame broadcast (tile-delta encoding)
-        if conn_mgr.active_count() > 0 && last_frame_time.elapsed() >= FRAME_INTERVAL {
-            last_frame_time = std::time::Instant::now();
-            if let Some(ref mut cap) = capture {
-                match cap.capture_frame() {
-                    Ok(frame) => {
-                        let raw_size = frame.data.len();
-                        let width = frame.width;
-                        let height = frame.height;
+        // Send at native resolution - no downscale (client scales via display).
+        let current_checksums =
+            encoding::compute_tile_checksums(&frame.data, width, height, tile_size);
+        let force_full = force_full_next.swap(false, Ordering::SeqCst)
+            || (frame_seq > 0 && frame_seq % KEYFRAME_INTERVAL == 0);
 
-                        let t0 = std::time::Instant::now();
-
-                        // Send at native resolution - no downscale (client scales via display)
-                        let (send_data, send_w, send_h) = (frame.data, width, height);
-
-                        let t_downscale = t0.elapsed();
-
-                        // Tile-delta encoding
-                        let t1 = std::time::Instant::now();
-                        let tile_size = encoding::DEFAULT_TILE_SIZE;
-                        let current_checksums = encoding::compute_tile_checksums(
-                            &send_data, send_w, send_h, tile_size,
-                        );
-
-                        // Force full frame every 15 frames for keyframe recovery
-                        // (or immediately when client requests a decoder refresh)
-                        let force_full = force_full_next || (frame_seq > 0 && frame_seq % 15 == 0);
-                        if force_full_next {
-                            force_full_next = false;
-                        }
-
-                        let (compressed_data, frame_type, changed_count, total_tiles) =
-                            if force_full || prev_checksums.is_none() {
-                                let c = encoding::compress_full_frame(&send_data)
-                                    .expect("compress_full_frame");
-                                prev_checksums = Some(current_checksums);
-                                (c, "full", 0u32, 0u32)
-                            } else {
-                                let prev = prev_checksums.as_ref().unwrap();
-                                let changed = encoding::detect_delta_tiles(prev, &current_checksums);
-                                if changed.is_empty() {
-                                    // No changes, skip
-                                    continue;
-                                }
-                                let total = encoding::total_tile_count(send_w, send_h, tile_size);
-                                if encoding::should_send_full_frame(changed.len(), total) {
-                                    let c = encoding::compress_full_frame(&send_data)
-                                        .expect("compress_full_frame");
-                                    prev_checksums = Some(current_checksums);
-                                    (c, "full", changed.len() as u32, total as u32)
-                                } else {
-                                    match encoding::compress_delta_tiles(
-                                        &send_data, send_w, send_h, tile_size, &changed,
-                                    ) {
-                                        Ok(c) => {
-                                            prev_checksums = Some(current_checksums);
-                                            (c, "delta", changed.len() as u32, total as u32)
-                                        }
-                                        Err(_) => {
-                                            let c = encoding::compress_full_frame(&send_data)
-                                                .expect("compress_full_frame");
-                                            prev_checksums = Some(current_checksums);
-                                            (c, "full", changed.len() as u32, total as u32)
-                                        }
-                                    }
-                                }
-                            };
-
-                        let t_encode = t1.elapsed();
-                        let t_checksum = t_encode; // combined for now
-
-                        let t2 = std::time::Instant::now();
-                        frame_seq = frame_seq.wrapping_add(1);
-                        let msg_id = frame_seq;
-                        let chunk_type = if frame_type == "delta" {
-                            MessageType::ScreenFrameChunkDelta
-                        } else {
-                            MessageType::ScreenFrameChunk
-                        };
-                        for &addr in &conn_mgr.active_addrs() {
-                            if let Err(e) = listener.send_fragmented(
-                                msg_id,
-                                &compressed_data,
-                                frame_seq,
-                                addr,
-                                send_w,
-                                send_h,
-                                chunk_type,
-                            ) {
-                                eprintln!("[!] Failed to send frame to {}: {}", addr, e);
-                            }
-                        }
-                        let t_send = t2.elapsed();
-
-                        // Log first 5 + every 60 frames
-                        if frame_seq <= 5 || frame_seq % 60 == 0 {
-                            let ratio = raw_size as f64 / compressed_data.len().max(1) as f64;
-                            println!(
-                                "[F] Frame #{}: {}x{} px, {} bytes (LZ4 {}, {:.1}:1) -> {} client(s)",
-                                frame_seq,
-                                send_w,
-                                send_h,
-                                compressed_data.len(),
-                                frame_type,
-                                ratio,
-                                conn_mgr.active_count(),
-                            );
-                            println!(
-                                "    timing: downscale={:.1}ms encode={:.1}ms send={:.1}ms",
-                                t_downscale.as_secs_f64() * 1000.0,
-                                t_checksum.as_secs_f64() * 1000.0,
-                                t_send.as_secs_f64() * 1000.0,
-                            );
-                        }
-                    }
-                    Err(CaptureError::FrameAcquireFailed(_)) => {
-                        // Timeout - no new frame
-                    }
-                    Err(CaptureError::DeviceLost) => {
-                        eprintln!("[!] DXGI device lost, reinitializing...");
-                        capture = capture::DxgiCapture::new().ok();
-                        prev_checksums = None;
+        let (compressed_data, frame_type): (Vec<u8>, &str) =
+            if force_full || prev_checksums.is_none() {
+                match encoding::compress_full_frame(&frame.data) {
+                    Ok(c) => {
+                        prev_checksums = Some(current_checksums);
+                        (c, "full")
                     }
                     Err(e) => {
-                        eprintln!("[!] Capture error: {:?}", e);
+                        eprintln!("[!] compress_full_frame failed: {}", e);
+                        continue;
                     }
                 }
-            }
+            } else {
+                let prev = prev_checksums.as_ref().unwrap();
+                let changed = encoding::detect_delta_tiles(prev, &current_checksums);
+                if changed.is_empty() {
+                    // No changes since last frame; skip entirely.
+                    continue;
+                }
+                let total = encoding::total_tile_count(width, height, tile_size);
+                if encoding::should_send_full_frame(changed.len(), total) {
+                    match encoding::compress_full_frame(&frame.data) {
+                        Ok(c) => {
+                            prev_checksums = Some(current_checksums);
+                            (c, "full")
+                        }
+                        Err(e) => {
+                            eprintln!("[!] compress_full_frame failed: {}", e);
+                            continue;
+                        }
+                    }
+                } else {
+                    match encoding::compress_delta_tiles(
+                        &frame.data,
+                        width,
+                        height,
+                        tile_size,
+                        &changed,
+                    ) {
+                        Ok(c) => {
+                            prev_checksums = Some(current_checksums);
+                            (c, "delta")
+                        }
+                        Err(_) => match encoding::compress_full_frame(&frame.data) {
+                            Ok(c) => {
+                                prev_checksums = Some(current_checksums);
+                                (c, "full")
+                            }
+                            Err(e) => {
+                                eprintln!("[!] compress_full_frame failed: {}", e);
+                                continue;
+                            }
+                        },
+                    }
+                }
+            };
+
+        frame_seq = frame_seq.wrapping_add(1);
+        let chunk_type = if frame_type == "delta" {
+            MessageType::ScreenFrameChunkDelta
+        } else {
+            MessageType::ScreenFrameChunk
+        };
+
+        let frame_to_send = FrameToSend {
+            msg_id: frame_seq,
+            seq: frame_seq,
+            width,
+            height,
+            chunk_type,
+            payload: compressed_data,
+        };
+
+        let payload_len = frame_to_send.payload.len();
+
+        // Hand off to the send thread. Blocks only if the channel is full (send
+        // thread momentarily behind); capture is otherwise never blocked by
+        // network I/O. This is the core of the thread-decoupling fix.
+        if tx.send(frame_to_send).is_err() {
+            // Send thread gone — exit capture loop.
+            break;
+        }
+
+        if frame_seq <= 5 || frame_seq % 60 == 0 {
+            let ratio = raw_size as f64 / payload_len.max(1) as f64;
+            println!(
+                "[F] Frame #{}: {}x{} px, {} bytes (LZ4 {}, {:.1}:1) -> send thread",
+                frame_seq,
+                width,
+                height,
+                payload_len,
+                frame_type,
+                ratio,
+            );
         }
     }
-
-    println!("\n[i] Host service shut down gracefully.");
 }
 
-/// Bilinear downscale BGRA data. Preserves text clarity much better than nearest-neighbor.
-fn downscale_bgra(
-    src: &[u8],
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
-) -> (Vec<u8>, u32, u32) {
-    if src_w == dst_w && src_h == dst_h {
-        return (src.to_vec(), dst_w, dst_h);
-    }
-
-    let src_stride = (src_w * 4) as usize;
-    let dst_stride = (dst_w * 4) as usize;
-    let mut dst = vec![0u8; (dst_stride * dst_h as usize)];
-
-    let x_ratio = src_w as f64 / dst_w as f64;
-    let y_ratio = src_h as f64 / dst_h as f64;
-
-    for dy in 0..dst_h as usize {
-        let src_y = dy as f64 * y_ratio;
-        let sy0 = src_y.floor() as usize;
-        let sy1 = (sy0 + 1).min(src_h as usize - 1);
-        let wy = src_y - sy0 as f64;
-
-        let dst_row_start = dy * dst_stride;
-
-        for dx in 0..dst_w as usize {
-            let src_x = dx as f64 * x_ratio;
-            let sx0 = src_x.floor() as usize;
-            let sx1 = (sx0 + 1).min(src_w as usize - 1);
-            let wx = src_x - sx0 as f64;
-
-            let dst_off = dst_row_start + dx * 4;
-
-            let p00 = sy0 * src_stride + sx0 * 4;
-            let p01 = sy0 * src_stride + sx1 * 4;
-            let p10 = sy1 * src_stride + sx0 * 4;
-            let p11 = sy1 * src_stride + sx1 * 4;
-
-            for c in 0..4 {
-                let v00 = src[p00 + c] as f64;
-                let v01 = src[p01 + c] as f64;
-                let v10 = src[p10 + c] as f64;
-                let v11 = src[p11 + c] as f64;
-
-                let top = v00 * (1.0 - wx) + v01 * wx;
-                let bot = v10 * (1.0 - wx) + v11 * wx;
-                let val = top * (1.0 - wy) + bot * wy;
-
-                dst[dst_off + c] = val.round().clamp(0.0, 255.0) as u8;
+/// Send loop. Runs on its own thread; drains the channel and transmits each
+/// frame via `UdpListener::send_fragmented`. The 10055 backpressure
+/// (sleep-retry on a full OS send buffer) only stalls this thread, never the
+/// capture thread — so a slow client degrades to dropped frames (recovered by
+/// DCC) instead of freezing the host.
+fn send_loop(
+    listener: Arc<UdpListener>,
+    conn_mgr: Arc<Mutex<ConnectionManager>>,
+    running: Arc<AtomicBool>,
+    rx: Receiver<FrameToSend>,
+) {
+    while running.load(Ordering::SeqCst) {
+        let frame = match rx.recv() {
+            Ok(f) => f,
+            Err(_) => break, // channel closed (capture thread exited)
+        };
+        let addrs = conn_mgr.lock().unwrap().active_addrs();
+        if addrs.is_empty() {
+            // No clients at send time — frame is obsolete, drop it.
+            continue;
+        }
+        for &addr in &addrs {
+            if let Err(e) = listener.send_fragmented(
+                frame.msg_id,
+                &frame.payload,
+                frame.seq,
+                addr,
+                frame.width,
+                frame.height,
+                frame.chunk_type,
+            ) {
+                eprintln!(
+                    "[!] Failed to send frame #{} to {}: {}",
+                    frame.msg_id, addr, e
+                );
             }
         }
     }
-
-    (dst, dst_w, dst_h)
 }
