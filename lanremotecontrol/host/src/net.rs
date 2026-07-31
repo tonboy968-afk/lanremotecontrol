@@ -109,7 +109,6 @@ impl UdpListener {
         chunk_type: MessageType,
     ) -> io::Result<()> {
         let chunks = split_into_chunks(payload, msg_id, width, height);
-        // Pre-serialise all chunk messages once.
         for (i, chunk) in chunks.iter().enumerate() {
             let chunk_bytes = bincode::serialize(chunk)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
@@ -117,15 +116,49 @@ impl UdpListener {
             let wire = msg
                 .to_bytes()
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            self.socket.send_to(&wire, dest)?;
-            // Yield every 64 chunks to avoid saturating the NIC/OS buffer
-            // on large full frames (400+ chunks)
-            if i > 0 && i % 64 == 0 {
+            // Backpressure: if the OS send buffer is full (WSAENOBUFS / WouldBlock)
+            // we wait for it to drain instead of dropping chunks. Dropping chunks
+            // mid-frame leaves the client with a partial frame, which manifests as
+            // stuck / ghosted (residual) pixels until the next keyframe.
+            let mut attempts = 0u32;
+            loop {
+                match self.socket.send_to(&wire, dest) {
+                    Ok(_) => break,
+                    Err(e) if is_buffer_full(&e) => {
+                        attempts += 1;
+                        if attempts >= MAX_SEND_RETRIES {
+                            // Buffer stayed full far too long (peer likely gone).
+                            // Abandon this frame: the client detects the gap and
+                            // requests a fresh keyframe via DCC.
+                            return Err(e);
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+            if i > 0 && i % 32 == 0 {
                 std::thread::yield_now();
             }
         }
         Ok(())
     }
+}
+
+/// Maximum times to retry a `send_to` that fails because the OS send buffer is
+/// temporarily full before we give up on the whole frame.
+const MAX_SEND_RETRIES: u32 = 50;
+
+/// Returns `true` if the socket error means "send buffer is full, try again".
+#[cfg(windows)]
+fn is_buffer_full(e: &io::Error) -> bool {
+    // WSAENOBUFS = 10055: system buffer space insufficient / queue full.
+    e.raw_os_error() == Some(10055)
+}
+
+#[cfg(not(windows))]
+fn is_buffer_full(e: &io::Error) -> bool {
+    e.kind() == io::ErrorKind::WouldBlock
 }
 
 // ============================================================================
