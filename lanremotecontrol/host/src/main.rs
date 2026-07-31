@@ -143,14 +143,6 @@ fn main() {
             }
         }
 
-        // Drip any queued full frame (keyframe) a few chunks per tick so the
-        // capture thread is never blocked by a large multi-MB send.
-        if conn_mgr.active_count() > 0 {
-            if let Err(e) = listener.drain_pending(128, &conn_mgr.active_addrs()) {
-                eprintln!("[!] Failed to pump queued frame: {}", e);
-            }
-        }
-
         // Heartbeat tick
         if hb.tick() {
             let seq = hb.current_seq();
@@ -251,30 +243,17 @@ fn main() {
                         } else {
                             MessageType::ScreenFrameChunk
                         };
-                        if frame_type == "full" {
-                            // Queue the large keyframe for interleaved sending so
-                            // capture is never blocked by a multi-MB send.
-                            listener.enqueue_frame(
+                        for &addr in &conn_mgr.active_addrs() {
+                            if let Err(e) = listener.send_fragmented(
                                 msg_id,
                                 &compressed_data,
                                 frame_seq,
+                                addr,
                                 send_w,
                                 send_h,
                                 chunk_type,
-                            );
-                        } else {
-                            for &addr in &conn_mgr.active_addrs() {
-                                if let Err(e) = listener.send_fragmented(
-                                    msg_id,
-                                    &compressed_data,
-                                    frame_seq,
-                                    addr,
-                                    send_w,
-                                    send_h,
-                                    chunk_type,
-                                ) {
-                                    eprintln!("[!] Failed to send frame to {}: {}", addr, e);
-                                }
+                            ) {
+                                eprintln!("[!] Failed to send frame to {}: {}", addr, e);
                             }
                         }
                         let t_send = t2.elapsed();

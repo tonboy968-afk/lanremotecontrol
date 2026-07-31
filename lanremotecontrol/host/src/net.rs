@@ -5,8 +5,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
-use std::collections::VecDeque;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use lanremotecontrol_common::*;
@@ -18,20 +16,6 @@ use lanremotecontrol_common::*;
 /// UDP listener that receives and sends protocol messages.
 pub struct UdpListener {
     socket: UdpSocket,
-    /// Full frames (keyframes) are queued here and dripped out a few chunks per
-    /// loop iteration so the caller's capture thread is never blocked by a
-    /// multi-MB frame send.
-    pending: Mutex<VecDeque<PendingFrame>>,
-}
-
-/// A frame queued for interleaved (dripped) sending.
-struct PendingFrame {
-    chunks: Vec<ScreenFrameChunk>,
-    seq: u32,
-    width: u32,
-    height: u32,
-    chunk_type: MessageType,
-    sent: usize,
 }
 
 impl UdpListener {
@@ -76,10 +60,7 @@ impl UdpListener {
             eprintln!("Warning: could not set TOS on socket: {}", e);
         }
 
-        Ok(Self {
-            socket,
-            pending: Mutex::new(VecDeque::new()),
-        })
+        Ok(Self { socket })
     }
 
     /// Block and receive a single message. Returns the parsed `Message` and
@@ -135,123 +116,32 @@ impl UdpListener {
             let wire = msg
                 .to_bytes()
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            self.send_wire(&wire, dest)?;
+            // Backpressure: if the OS send buffer is full (WSAENOBUFS / WouldBlock)
+            // we wait for it to drain instead of dropping chunks. Dropping chunks
+            // mid-frame leaves the client with a partial frame, which manifests as
+            // stuck / ghosted (residual) pixels until the next keyframe.
+            let mut attempts = 0u32;
+            loop {
+                match self.socket.send_to(&wire, dest) {
+                    Ok(_) => break,
+                    Err(e) if is_buffer_full(&e) => {
+                        attempts += 1;
+                        if attempts >= MAX_SEND_RETRIES {
+                            // Buffer stayed full far too long (peer likely gone).
+                            // Abandon this frame: the client detects the gap and
+                            // requests a fresh keyframe via DCC.
+                            return Err(e);
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
             if i > 0 && i % 32 == 0 {
                 std::thread::yield_now();
             }
         }
         Ok(())
-    }
-
-    /// Send one serialised datagram with backpressure. If the OS send buffer is
-    /// full (WSAENOBUFS / WouldBlock) we wait for it to drain instead of
-    /// dropping the datagram. Dropping chunks mid-frame leaves the client with
-    /// a partial frame, which shows up as stuck / ghosted (residual) pixels.
-    fn send_wire(&self, wire: &[u8], dest: SocketAddr) -> io::Result<()> {
-        let mut attempts = 0u32;
-        loop {
-            match self.socket.send_to(wire, dest) {
-                Ok(_) => return Ok(()),
-                Err(e) if is_buffer_full(&e) => {
-                    attempts += 1;
-                    if attempts >= MAX_SEND_RETRIES {
-                        // Buffer stayed full far too long (peer likely gone).
-                        // Abandon this datagram: the client detects the gap and
-                        // requests a fresh keyframe via DCC.
-                        return Err(e);
-                    }
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    /// Queue a frame for interleaved (dripped) sending. Frames are appended to a
-    /// FIFO queue; `drain_pending` sends as many as it can per call.
-    pub fn enqueue_frame(
-        &self,
-        msg_id: u32,
-        payload: &[u8],
-        seq: u32,
-        width: u32,
-        height: u32,
-        chunk_type: MessageType,
-    ) {
-        let chunks = split_into_chunks(payload, msg_id, width, height);
-        self.pending.lock().unwrap().push_back(PendingFrame {
-            chunks,
-            seq,
-            width,
-            height,
-            chunk_type,
-            sent: 0,
-        });
-    }
-
-    /// Drain and send up to `max_chunks` chunks from the front of the queue.
-    /// Returns total chunks sent. Designed to be called once per capture loop
-    /// tick; multiple frames can be queued and will be sent in FIFO order.
-    pub fn drain_pending(&self, max_chunks: usize, addrs: &[SocketAddr]) -> io::Result<usize> {
-        let mut total_sent = 0;
-
-        loop {
-            // Pop fully-sent frames from the front.
-            {
-                let mut q = self.pending.lock().unwrap();
-                while let Some(pf) = q.front() {
-                    if pf.sent >= pf.chunks.len() {
-                        q.pop_front();
-                    } else {
-                        break;
-                    }
-                }
-            }
-
-            // Nothing left?
-            let front_sent = {
-                let q = self.pending.lock().unwrap();
-                match q.front() {
-                    Some(pf) => pf.sent,
-                    None => return Ok(total_sent),
-                }
-            };
-
-            // How many can we send this tick?
-            let (this_start, this_end) = {
-                let q = self.pending.lock().unwrap();
-                let pf = q.front().unwrap();
-                let end = (front_sent + max_chunks).min(pf.chunks.len());
-                (front_sent, end)
-            };
-            if this_start >= this_end {
-                break;
-            }
-
-            {
-                let mut q = self.pending.lock().unwrap();
-                let pf = q.front_mut().unwrap();
-                for chunk in &pf.chunks[this_start..this_end] {
-                    let chunk_bytes = bincode::serialize(chunk)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                    let msg = Message::new(pf.chunk_type, pf.seq, chunk_bytes);
-                    let wire = msg
-                        .to_bytes()
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-                    for &addr in addrs {
-                        self.send_wire(&wire, addr)?;
-                    }
-                    total_sent += 1;
-                }
-                pf.sent = this_end;
-            }
-
-            if total_sent >= max_chunks {
-                break;
-            }
-        }
-
-        Ok(total_sent)
     }
 }
 
