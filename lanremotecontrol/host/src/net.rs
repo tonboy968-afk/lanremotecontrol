@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use lanremotecontrol_common::*;
@@ -16,6 +17,20 @@ use lanremotecontrol_common::*;
 /// UDP listener that receives and sends protocol messages.
 pub struct UdpListener {
     socket: UdpSocket,
+    /// Full frames (keyframes) are queued here and dripped out a few chunks per
+    /// loop iteration so the caller's capture thread is never blocked by a
+    /// multi-MB frame send.
+    pending: Mutex<Option<PendingFrame>>,
+}
+
+/// A frame queued for interleaved (dripped) sending.
+struct PendingFrame {
+    chunks: Vec<ScreenFrameChunk>,
+    seq: u32,
+    width: u32,
+    height: u32,
+    chunk_type: MessageType,
+    sent: usize,
 }
 
 impl UdpListener {
@@ -60,7 +75,10 @@ impl UdpListener {
             eprintln!("Warning: could not set TOS on socket: {}", e);
         }
 
-        Ok(Self { socket })
+        Ok(Self {
+            socket,
+            pending: Mutex::new(None),
+        })
     }
 
     /// Block and receive a single message. Returns the parsed `Message` and
@@ -116,32 +134,90 @@ impl UdpListener {
             let wire = msg
                 .to_bytes()
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            // Backpressure: if the OS send buffer is full (WSAENOBUFS / WouldBlock)
-            // we wait for it to drain instead of dropping chunks. Dropping chunks
-            // mid-frame leaves the client with a partial frame, which manifests as
-            // stuck / ghosted (residual) pixels until the next keyframe.
-            let mut attempts = 0u32;
-            loop {
-                match self.socket.send_to(&wire, dest) {
-                    Ok(_) => break,
-                    Err(e) if is_buffer_full(&e) => {
-                        attempts += 1;
-                        if attempts >= MAX_SEND_RETRIES {
-                            // Buffer stayed full far too long (peer likely gone).
-                            // Abandon this frame: the client detects the gap and
-                            // requests a fresh keyframe via DCC.
-                            return Err(e);
-                        }
-                        std::thread::sleep(Duration::from_millis(1));
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
+            self.send_wire(&wire, dest)?;
             if i > 0 && i % 32 == 0 {
                 std::thread::yield_now();
             }
         }
         Ok(())
+    }
+
+    /// Send one serialised datagram with backpressure. If the OS send buffer is
+    /// full (WSAENOBUFS / WouldBlock) we wait for it to drain instead of
+    /// dropping the datagram. Dropping chunks mid-frame leaves the client with
+    /// a partial frame, which shows up as stuck / ghosted (residual) pixels.
+    fn send_wire(&self, wire: &[u8], dest: SocketAddr) -> io::Result<()> {
+        let mut attempts = 0u32;
+        loop {
+            match self.socket.send_to(wire, dest) {
+                Ok(_) => return Ok(()),
+                Err(e) if is_buffer_full(&e) => {
+                    attempts += 1;
+                    if attempts >= MAX_SEND_RETRIES {
+                        // Buffer stayed full far too long (peer likely gone).
+                        // Abandon this datagram: the client detects the gap and
+                        // requests a fresh keyframe via DCC.
+                        return Err(e);
+                    }
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// Queue a frame for interleaved (dripped) sending across multiple loop
+    /// iterations, so the caller's capture thread is never blocked by a large
+    /// multi-MB full frame (keyframe). Call `pump_queued` once per loop
+    /// iteration to drip it out while capture keeps running at full rate.
+    pub fn enqueue_frame(
+        &self,
+        msg_id: u32,
+        payload: &[u8],
+        seq: u32,
+        width: u32,
+        height: u32,
+        chunk_type: MessageType,
+    ) {
+        let chunks = split_into_chunks(payload, msg_id, width, height);
+        *self.pending.lock().unwrap() = Some(PendingFrame {
+            chunks,
+            seq,
+            width,
+            height,
+            chunk_type,
+            sent: 0,
+        });
+    }
+
+    /// Send up to `max_chunks` of any queued frame to `addrs`. Call this once
+    /// per loop iteration (before capture) so a queued full frame is dripped
+    /// out while capture continues. Returns the number of chunks sent.
+    pub fn pump_queued(&self, max_chunks: usize, addrs: &[SocketAddr]) -> io::Result<usize> {
+        let mut guard = self.pending.lock().unwrap();
+        let pf = match guard.as_mut() {
+            Some(pf) => pf,
+            None => return Ok(0),
+        };
+        let start = pf.sent;
+        let end = (start + max_chunks).min(pf.chunks.len());
+        for chunk in &pf.chunks[start..end] {
+            let chunk_bytes = bincode::serialize(chunk)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let msg = Message::new(pf.chunk_type, pf.seq, chunk_bytes);
+            let wire = msg
+                .to_bytes()
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            for &addr in addrs {
+                self.send_wire(&wire, addr)?;
+            }
+        }
+        pf.sent = end;
+        let sent = end - start;
+        if pf.sent >= pf.chunks.len() {
+            *guard = None;
+        }
+        Ok(sent)
     }
 }
 
