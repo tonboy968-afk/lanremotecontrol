@@ -5,6 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
+use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,7 @@ pub struct UdpListener {
     /// Full frames (keyframes) are queued here and dripped out a few chunks per
     /// loop iteration so the caller's capture thread is never blocked by a
     /// multi-MB frame send.
-    pending: Mutex<Option<PendingFrame>>,
+    pending: Mutex<VecDeque<PendingFrame>>,
 }
 
 /// A frame queued for interleaved (dripped) sending.
@@ -77,7 +78,7 @@ impl UdpListener {
 
         Ok(Self {
             socket,
-            pending: Mutex::new(None),
+            pending: Mutex::new(VecDeque::new()),
         })
     }
 
@@ -166,10 +167,8 @@ impl UdpListener {
         }
     }
 
-    /// Queue a frame for interleaved (dripped) sending across multiple loop
-    /// iterations, so the caller's capture thread is never blocked by a large
-    /// multi-MB full frame (keyframe). Call `pump_queued` once per loop
-    /// iteration to drip it out while capture keeps running at full rate.
+    /// Queue a frame for interleaved (dripped) sending. Frames are appended to a
+    /// FIFO queue; `drain_pending` sends as many as it can per call.
     pub fn enqueue_frame(
         &self,
         msg_id: u32,
@@ -180,7 +179,7 @@ impl UdpListener {
         chunk_type: MessageType,
     ) {
         let chunks = split_into_chunks(payload, msg_id, width, height);
-        *self.pending.lock().unwrap() = Some(PendingFrame {
+        self.pending.lock().unwrap().push_back(PendingFrame {
             chunks,
             seq,
             width,
@@ -190,34 +189,69 @@ impl UdpListener {
         });
     }
 
-    /// Send up to `max_chunks` of any queued frame to `addrs`. Call this once
-    /// per loop iteration (before capture) so a queued full frame is dripped
-    /// out while capture continues. Returns the number of chunks sent.
-    pub fn pump_queued(&self, max_chunks: usize, addrs: &[SocketAddr]) -> io::Result<usize> {
-        let mut guard = self.pending.lock().unwrap();
-        let pf = match guard.as_mut() {
-            Some(pf) => pf,
-            None => return Ok(0),
-        };
-        let start = pf.sent;
-        let end = (start + max_chunks).min(pf.chunks.len());
-        for chunk in &pf.chunks[start..end] {
-            let chunk_bytes = bincode::serialize(chunk)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            let msg = Message::new(pf.chunk_type, pf.seq, chunk_bytes);
-            let wire = msg
-                .to_bytes()
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-            for &addr in addrs {
-                self.send_wire(&wire, addr)?;
+    /// Drain and send up to `max_chunks` chunks from the front of the queue.
+    /// Returns total chunks sent. Designed to be called once per capture loop
+    /// tick; multiple frames can be queued and will be sent in FIFO order.
+    pub fn drain_pending(&self, max_chunks: usize, addrs: &[SocketAddr]) -> io::Result<usize> {
+        let mut total_sent = 0;
+
+        loop {
+            // Pop fully-sent frames from the front.
+            {
+                let mut q = self.pending.lock().unwrap();
+                while let Some(pf) = q.front() {
+                    if pf.sent >= pf.chunks.len() {
+                        q.pop_front();
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Nothing left?
+            let front_sent = {
+                let q = self.pending.lock().unwrap();
+                match q.front() {
+                    Some(pf) => pf.sent,
+                    None => return Ok(total_sent),
+                }
+            };
+
+            // How many can we send this tick?
+            let (this_start, this_end) = {
+                let q = self.pending.lock().unwrap();
+                let pf = q.front().unwrap();
+                let end = (front_sent + max_chunks).min(pf.chunks.len());
+                (front_sent, end)
+            };
+            if this_start >= this_end {
+                break;
+            }
+
+            {
+                let mut q = self.pending.lock().unwrap();
+                let pf = q.front_mut().unwrap();
+                for chunk in &pf.chunks[this_start..this_end] {
+                    let chunk_bytes = bincode::serialize(chunk)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                    let msg = Message::new(pf.chunk_type, pf.seq, chunk_bytes);
+                    let wire = msg
+                        .to_bytes()
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                    for &addr in addrs {
+                        self.send_wire(&wire, addr)?;
+                    }
+                    total_sent += 1;
+                }
+                pf.sent = this_end;
+            }
+
+            if total_sent >= max_chunks {
+                break;
             }
         }
-        pf.sent = end;
-        let sent = end - start;
-        if pf.sent >= pf.chunks.len() {
-            *guard = None;
-        }
-        Ok(sent)
+
+        Ok(total_sent)
     }
 }
 
