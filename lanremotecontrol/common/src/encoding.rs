@@ -81,7 +81,7 @@ pub fn tile_checksums(
     height: u32,
     tile_size: u32,
 ) -> HashMap<(u32, u32), u32> {
-    use xxhash_rust::xxh32::xxh32;
+    use xxhash_rust::xxh32::Xxh32;
 
     let stride = width * 4; // BGRA: 4 bytes per pixel (no row padding assumed)
     let cols = (width + tile_size - 1) / tile_size;
@@ -91,20 +91,23 @@ pub fn tile_checksums(
 
     for tile_row in 0..rows {
         for tile_col in 0..cols {
-            let mut tile_data = Vec::with_capacity((tile_size * tile_size * 4) as usize);
-
             let y_start = tile_row * tile_size;
             let y_end = (y_start + tile_size).min(height);
             let x_start = tile_col * tile_size;
             let x_end = (x_start + tile_size).min(width);
 
+            // Stream the tile's rows into XXH32 instead of copying them into a
+            // contiguous 64 KB buffer first. This removes ~15 MB of per-frame
+            // allocation churn at 1440p (240 tiles x 64 KB), which was causing
+            // periodic allocator stalls / micro-stutter. The resulting hash is
+            // byte-for-byte identical to the previous xxh32(&tile_data, 0).
+            let mut hasher = Xxh32::new(0);
             for y in y_start..y_end {
                 let row_start = (y * stride + x_start * 4) as usize;
                 let row_end = (y * stride + x_end * 4) as usize;
-                tile_data.extend_from_slice(&frame[row_start..row_end]);
+                hasher.update(&frame[row_start..row_end]);
             }
-
-            let hash = xxh32(&tile_data, 0);
+            let hash = hasher.digest();
             checksums.insert((tile_col, tile_row), hash);
         }
     }
