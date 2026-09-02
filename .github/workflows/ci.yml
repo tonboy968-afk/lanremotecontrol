@@ -11,6 +11,7 @@ jobs:
     defaults:
       run:
         working-directory: lanremotecontrol
+        shell: bash
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
