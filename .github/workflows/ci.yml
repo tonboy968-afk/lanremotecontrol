@@ -1,0 +1,27 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: lanremotecontrol
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: lanremotecontrol
+      - name: cargo check (blocking)
+        run: cargo check --all-targets
+      - name: cargo fmt --check (non-blocking)
+        run: cargo fmt --check || echo "::warning::cargo fmt found issues (non-blocking)"
+      - name: cargo clippy (non-blocking)
+        run: cargo clippy --all-targets || echo "::warning::clippy found lints (non-blocking)"
